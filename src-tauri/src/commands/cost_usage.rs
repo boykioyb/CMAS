@@ -145,7 +145,7 @@ fn build_project_account_map(
     let mut map = HashMap::new();
     for account in accounts {
         for project in &account.projects {
-            let dir_name = project.path.replace('/', "-");
+            let dir_name = project.path.replace('/', "-").replace('\\', "-");
             map.insert(
                 dir_name,
                 (account.email.clone(), account.label.clone(), account.id.clone()),

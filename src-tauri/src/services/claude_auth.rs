@@ -73,21 +73,50 @@ pub fn start_login() -> Result<()> {
 
 /// Find the claude CLI path
 pub fn find_claude_cli() -> Option<String> {
-    let candidates = [
-        "/usr/local/bin/claude",
-        "/opt/homebrew/bin/claude",
-    ];
+    #[cfg(target_os = "macos")]
+    {
+        let candidates = [
+            "/usr/local/bin/claude",
+            "/opt/homebrew/bin/claude",
+        ];
 
-    for path in &candidates {
-        if std::path::Path::new(path).exists() {
-            return Some(path.to_string());
+        for path in &candidates {
+            if std::path::Path::new(path).exists() {
+                return Some(path.to_string());
+            }
         }
     }
 
-    // Try `which claude`
-    if let Ok(output) = Command::new("which").arg("claude").output() {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+            let candidate = format!("{}\\Programs\\claude\\claude.exe", local_app);
+            if std::path::Path::new(&candidate).exists() {
+                return Some(candidate);
+            }
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            let candidate = format!("{}\\claude\\claude.exe", program_files);
+            if std::path::Path::new(&candidate).exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // Fallback: which (macOS/Linux) / where (Windows)
+    #[cfg(target_os = "windows")]
+    let lookup_cmd = "where";
+    #[cfg(not(target_os = "windows"))]
+    let lookup_cmd = "which";
+
+    if let Ok(output) = Command::new(lookup_cmd).arg("claude").output() {
         if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let path = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
             if !path.is_empty() {
                 return Some(path);
             }

@@ -230,7 +230,7 @@ export default {
     },
     about: {
       version: 'Version',
-      description: 'A tool to manage and switch between multiple Claude Code accounts on macOS.',
+      description: 'A tool to manage and switch between multiple Claude Code accounts.',
       github: 'Source on GitHub',
       license: 'License: CC BY-NC-SA 4.0',
       author: 'Author',

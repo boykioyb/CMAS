@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] — 2026-04-13
+
+### Features
+
+- **Windows support** — CMAS now builds and runs on Windows in addition to macOS ([#1](https://github.com/boykioyb/CMAS/issues/1))
+- **CI/CD pipeline** — GitHub Actions workflow builds for macOS (ARM64 + x64), Windows x64, and Linux x64 on tag push
+- **Release script** — `scripts/release.sh` bumps version across all config files, commits, tags, and pushes in one command
+
+### Changes
+
+- **Credential storage** — Replaced macOS `security` CLI with [`keyring`](https://crates.io/crates/keyring) crate for cross-platform Keychain/Credential Manager support
+- **VSCode isolation (Windows)** — Uses NTFS junctions instead of Unix symlinks; sets `USERPROFILE`/`USERNAME` instead of `HOME`/`USER`
+- **CLI discovery** — `find_vscode_path()` and `find_claude_cli()` now detect Windows install paths (`%LOCALAPPDATA%`, `%ProgramFiles%`)
+- **Browser open** — `open_claude_login` uses platform-appropriate command (`open` / `cmd /C start` / `xdg-open`)
+- **Path handling** — Fixed `path_to_project_dir_name` to handle Windows backslash separators
+- **i18n** — Removed macOS-specific wording from descriptions
+
+### Technical
+
+- Removed unused `security-framework` dependency
+- Added `keyring` (cross-platform) and `junction` (Windows) dependencies
+- Conditional compilation via `#[cfg(target_os)]` throughout services layer
+
+---
+
 ## [1.0.0] — 2026-04-12
 
 ### Features
@@ -29,5 +54,5 @@ All notable changes to this project will be documented in this file.
 
 - **Frontend** — Vue 3, TypeScript, Tailwind CSS 4, Pinia, Vue Router, Chart.js
 - **Backend** — Rust, Tauri 2
-- **Credential** — macOS Keychain (`security-framework`)
+- **Credential** — [`keyring`](https://crates.io/crates/keyring) (macOS Keychain / Windows Credential Manager)
 - **Storage** — Tauri Plugin Store (JSON)

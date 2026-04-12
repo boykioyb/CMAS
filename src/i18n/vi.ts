@@ -200,7 +200,7 @@ export default {
       light: 'Sáng',
       dark: 'Tối',
       system: 'Theo hệ thống',
-      launchAtLogin: 'Khởi động cùng macOS',
+      launchAtLogin: 'Khởi động cùng hệ thống',
       launchAtLoginDesc: 'Tự động mở khi đăng nhập',
     },
     accountSettings: {
@@ -230,7 +230,7 @@ export default {
     },
     about: {
       version: 'Phiên bản',
-      description: 'Công cụ quản lý và chuyển đổi nhiều tài khoản Claude Code trên macOS.',
+      description: 'Công cụ quản lý và chuyển đổi nhiều tài khoản Claude Code.',
       github: 'Mã nguồn trên GitHub',
       license: 'Giấy phép: CC BY-NC-SA 4.0',
       author: 'Tác giả',

@@ -79,7 +79,7 @@ fn classify_model(model: &str) -> Option<&'static str> {
 /// Convert a project filesystem path to the directory name used in ~/.claude/projects/
 /// e.g., "/Users/john/Projects/foo" → "-Users-john-Projects-foo"
 fn path_to_project_dir_name(path: &str) -> String {
-    path.replace('/', "-")
+    path.replace('/', "-").replace('\\', "-")
 }
 
 /// Scan session JSONL files under ~/.claude/projects/ for usage data.

@@ -225,9 +225,19 @@ pub fn fetch_account_usage(account_id: String) -> Result<RealUsageData, String> 
 /// Open claude.ai usage page in default browser.
 #[tauri::command]
 pub async fn open_claude_login() -> Result<(), String> {
-    std::process::Command::new("open")
-        .arg("https://claude.ai/settings/usage")
-        .spawn()
-        .map_err(|e| format!("Cannot open browser: {}", e))?;
+    let url = "https://claude.ai/settings/usage";
+
+    #[cfg(target_os = "macos")]
+    let result = std::process::Command::new("open").arg(url).spawn();
+
+    #[cfg(target_os = "windows")]
+    let result = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let result = std::process::Command::new("xdg-open").arg(url).spawn();
+
+    result.map_err(|e| format!("Cannot open browser: {}", e))?;
     Ok(())
 }

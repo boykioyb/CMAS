@@ -24,6 +24,9 @@ impl Default for AppConfig {
         Self {
             language: "vi".to_string(),
             theme: "system".to_string(),
+            #[cfg(target_os = "windows")]
+            vscode_path: "code.cmd".to_string(),
+            #[cfg(not(target_os = "windows"))]
             vscode_path: "/usr/local/bin/code".to_string(),
             quota_warning_threshold: 20,
             auto_switch_on_empty: false,

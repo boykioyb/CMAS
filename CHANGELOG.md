@@ -1,59 +1,33 @@
 # Changelog
 
-## v0.1.1 — 2026-04-07
+All notable changes to this project will be documented in this file.
 
-### Isolated VSCode Sessions
-- Each account runs VSCode in a **separate process** with its own keychain entry
-- Uses `--user-data-dir` to force VSCode to create a new Electron process (instead of IPC to an existing one)
-- Uses `--extensions-dir` to share already-installed extensions
-- Automatically copies `settings.json` and `keybindings.json` from default VSCode on first launch
-- Switching accounts in CMAS **does not affect** already-open VSCode windows
+## [1.0.0] — 2026-04-12
 
-### Credential Fixes
-- Fix `security -i` writing incorrect hex data (removed `"` wrapping hex in `-X` flag)
-- Each VSCode session uses its own keychain entry (`-a cmas-{account_id}`) instead of global username
-- "Open VSCode" no longer changes the global active account — only creates an isolated session
+### Features
 
-### Usage Display
-- Dashboard automatically scans session JSONL files when loading account list (previously usage was always 0)
-- Display **session reset time**: countdown until the 5h window expires (e.g. "Resets in 2h 15m")
-- Display **weekly reset time**: weekly reset date + countdown (e.g. "Resets in 3d (Mon 04/07)")
-- Display detailed output tokens + message count within the 5h session
-- Per-model breakdown: separate Opus and Sonnet usage
+- **Multi-account management** — Add, edit, and delete Claude Code accounts with search, filtering, and grid/table views
+- **One-click switching** — Switch credentials via macOS Keychain instantly, no re-login required
+- **VSCode session isolation** — Each account opens VSCode in a separate Electron process with its own `--user-data-dir`, preventing credential conflicts between sessions
+- **Cost & usage analytics** — Estimate API costs, view daily spending charts, per-model breakdown (Opus/Sonnet/Haiku), and cumulative cost tracking
+- **Session & weekly reset timers** — Countdown for 5-hour session window and weekly quota reset
+- **Optimal account suggestion** — Automatically suggest the account with the lowest usage
+- **OAuth usage scraping** — Fetch real-time usage data from Claude's API per account
+- **Dark mode** — System-aware theme with manual light/dark/system toggle
+- **Multilingual** — English and Vietnamese with persistent language preference
+- **Settings management** — Configurable VSCode path, quota warning threshold, usage refresh interval
 
-### Window Drag
-- Added `core:window:allow-start-dragging` permission to Tauri capabilities
-- App window can now be dragged normally
+### Technical Highlights
 
----
+- **Credential security** — All tokens stored in macOS Keychain with per-account entries (`cmas-{id}`), never in plain text
+- **Session isolation architecture** — Each VSCode instance runs with isolated `--user-data-dir`, shared `--extensions-dir`, and unique `USER` env var
+- **Auto-copy VSCode settings** — First launch copies `settings.json` and `keybindings.json` from default VSCode profile
+- **JSONL usage parser** — Scans Claude Code session files to calculate per-model token usage
+- **Chrome cookie extraction** — Decrypt Chrome cookies via PBKDF2-SHA1 for OAuth token retrieval
 
-### Technical Details
+### Tech Stack
 
-**Session isolation architecture:**
-```
-Open VSCode for account A:
-  → keychain: write to -a "cmas-88c7f287" -s "Claude Code-credentials"
-  → vscode:   code --new-window --user-data-dir ~/.claude-switcher/vscode-sessions/cmas-88c7f287/
-                    --extensions-dir ~/.vscode/extensions/
-  → env:      USER=cmas-88c7f287
-
-Open VSCode for account B:
-  → keychain: write to -a "cmas-13a719ea" -s "Claude Code-credentials"  
-  → vscode:   code --new-window --user-data-dir ~/.claude-switcher/vscode-sessions/cmas-13a719ea/
-                    --extensions-dir ~/.vscode/extensions/
-  → env:      USER=cmas-13a719ea
-```
-
-Each VSCode process reads keychain from its own entry → fully independent.
-
-**Files changed:**
-- `src-tauri/src/services/keychain.rs` — Added `write_session_credentials()`, refactored `write_credentials_for_user()`
-- `src-tauri/src/services/vscode.rs` — Added `--user-data-dir`, `--extensions-dir`, `USER` env var, auto-copy settings
-- `src-tauri/src/services/usage_tracker.rs` — Added `session_reset_at`, `weekly_reset_at`, track earliest message in 5h window
-- `src-tauri/src/commands/switch.rs` — `switch_and_open_vscode` uses isolated session, no longer changes global active
-- `src-tauri/src/commands/account.rs` — `list_accounts` automatically refreshes usage for active account
-- `src-tauri/src/models/account.rs` — Added `session_reset_at`, `weekly_reset_at` to `UsageInfo`
-- `src-tauri/capabilities/default.json` — Added `core:window:allow-start-dragging`
-- `src/types/index.ts` — Added `session_reset_at`, `weekly_reset_at`
-- `src/components/dashboard/CurrentAccount.vue` — Display reset countdown, token details
-- `src/i18n/vi.ts`, `src/i18n/en.ts` — Added key `resetNow`
+- **Frontend** — Vue 3, TypeScript, Tailwind CSS 4, Pinia, Vue Router, Chart.js
+- **Backend** — Rust, Tauri 2
+- **Credential** — macOS Keychain (`security-framework`)
+- **Storage** — Tauri Plugin Store (JSON)

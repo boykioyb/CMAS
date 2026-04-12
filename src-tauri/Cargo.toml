@@ -1,10 +1,10 @@
 [package]
 name = "app"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-license = ""
-repository = ""
+version = "1.0.0"
+description = "Manage and switch between multiple Claude Code accounts on macOS"
+authors = ["Hoa TQ <https://hoatq.dev>"]
+license = "CC-BY-NC-SA-4.0"
+repository = "https://github.com/boykioyb/CMAS"
 edition = "2021"
 rust-version = "1.77.2"
 

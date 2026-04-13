@@ -81,6 +81,9 @@ fn ensure_session_data_dir(data_dir: &PathBuf) {
             PathBuf::from(appdata).join("Code").join("User")
         };
 
+        #[cfg(target_os = "linux")]
+        let default_user_dir = home.join(".config/Code/User");
+
         for file in &["settings.json", "keybindings.json"] {
             let src = default_user_dir.join(file);
             if src.exists() {
@@ -136,7 +139,7 @@ fn setup_session_home(real_home: &Path, session_key: &str) -> Result<PathBuf> {
     if !claude_link.exists() {
         let claude_target = real_home.join(".claude");
 
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         std::os::unix::fs::symlink(&claude_target, &claude_link)?;
 
         #[cfg(target_os = "windows")]

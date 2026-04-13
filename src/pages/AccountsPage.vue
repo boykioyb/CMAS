@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useAccountStore } from '@/stores/accountStore'
+import { useConfigStore } from '@/stores/configStore'
 import { useUiStore } from '@/stores/uiStore'
 import { Plus, RefreshCw, List, LayoutGrid, Search, Users } from 'lucide-vue-next'
 import AccountTable from '@/components/accounts/AccountTable.vue'
@@ -13,6 +14,7 @@ import type { Account } from '@/types'
 
 const { t } = useI18n()
 const accountStore = useAccountStore()
+const configStore = useConfigStore()
 const uiStore = useUiStore()
 
 const showAddDialog = ref(false)
@@ -47,8 +49,8 @@ const filteredAccounts = computed(() => {
 
 async function handleSwitchVscode(id: string) {
   try {
-    // Uses the account's selected project automatically
-    const result = await accountStore.switchAndOpenVscode(id)
+    // Uses the account's selected project + configured VSCode path
+    const result = await accountStore.switchAndOpenVscode(id, undefined, configStore.config.vscode_path || undefined)
     if (result.success) {
       uiStore.showToast('success', t('switch.success'))
     }

@@ -11,6 +11,7 @@ const uiStore = useUiStore()
 
 const activeTab = ref('general')
 const detecting = ref(false)
+const detectingCli = ref(false)
 
 const tabs = computed(() => [
   { key: 'general', label: t('settings.tabs.general'), icon: Settings },
@@ -32,6 +33,22 @@ async function detectVscode() {
     uiStore.showToast('error', String(e))
   } finally {
     detecting.value = false
+  }
+}
+
+async function detectCli() {
+  detectingCli.value = true
+  try {
+    const path = await configStore.detectCli()
+    if (path) {
+      uiStore.showToast('success', `${t('settings.vscode.detected')}: ${path}`)
+    } else {
+      uiStore.showToast('warning', t('settings.vscode.notFound'))
+    }
+  } catch (e) {
+    uiStore.showToast('error', String(e))
+  } finally {
+    detectingCli.value = false
   }
 }
 
@@ -115,6 +132,30 @@ function setTheme(theme: 'light' | 'dark' | 'system') {
 
       <!-- Account settings -->
       <div v-else-if="activeTab === 'accounts'" key="accounts" class="space-y-6">
+        <!-- Claude CLI Path -->
+        <div>
+          <h3 class="text-sm font-semibold text-gray-900 dark:text-white mb-1">{{ t('settings.accountSettings.claudeCliPath') }}</h3>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{ t('settings.accountSettings.claudeCliPathDesc') }}</p>
+          <div class="flex gap-2">
+            <input
+              v-model="configStore.config.claude_cli_path"
+              @change="configStore.saveConfig()"
+              placeholder="Auto-detect"
+              class="flex-1 px-3 py-2 border border-gray-200 dark:border-gray-600 rounded-lg bg-gray-50 dark:bg-gray-700 text-sm text-gray-900 dark:text-white font-mono focus:ring-2 focus:ring-primary-500 outline-none"
+            />
+            <button
+              @click="detectCli"
+              :disabled="detectingCli"
+              class="px-4 py-2 rounded-lg border border-gray-200 dark:border-gray-600 text-sm font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
+            >
+              <SearchIcon :size="16" :class="{ 'animate-spin': detectingCli }" />
+            </button>
+          </div>
+        </div>
+
+        <hr class="border-gray-100 dark:border-gray-700" />
+
+        <!-- Claude Config Path -->
         <div>
           <h3 class="text-sm font-semibold text-gray-900 dark:text-white mb-1">{{ t('settings.accountSettings.claudeConfigPath') }}</h3>
           <p class="text-xs text-gray-500 dark:text-gray-400 mb-2">{{ t('settings.accountSettings.claudeConfigPathDesc') }}</p>

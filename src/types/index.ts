@@ -72,6 +72,7 @@ export interface AppConfig {
   auto_switch_on_empty: boolean
   launch_at_login: boolean
   claude_config_path: string
+  claude_cli_path: string // empty = auto-detect
   backup_dir: string
   usage_refresh_interval: number // seconds, 0 = disabled
 }

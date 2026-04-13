@@ -110,6 +110,18 @@ pub fn delete_credentials(account_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Sync active keychain credentials to the active account's backup.
+/// The Claude CLI refreshes OAuth tokens automatically in the active keychain
+/// entry, but CMAS backup copies become stale. Call this on startup to keep
+/// the active account's backup in sync with the CLI-refreshed token.
+pub fn sync_active_credentials_to_backup(active_account_id: &str) {
+    if let Ok(current_creds) = read_active_credentials() {
+        if !current_creds.is_empty() {
+            let _ = backup_credentials(active_account_id, &current_creds);
+        }
+    }
+}
+
 /// One-time migration: if the old keychain entry (account="claude-code") exists
 /// but the correct entry (account=OS_USERNAME) does not, copy it over.
 /// Also cleans up the stale old entry.

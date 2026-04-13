@@ -12,6 +12,7 @@ export const useConfigStore = defineStore('config', () => {
     auto_switch_on_empty: false,
     launch_at_login: false,
     claude_config_path: '~/.claude/.claude.json',
+    claude_cli_path: '',
     backup_dir: '~/.claude-switcher/',
     usage_refresh_interval: 300,
   })
@@ -44,6 +45,15 @@ export const useConfigStore = defineStore('config', () => {
     return path
   }
 
+  async function detectCli() {
+    const path = await invoke<string | null>('find_claude_cli')
+    if (path) {
+      config.value.claude_cli_path = path
+      await saveConfig()
+    }
+    return path
+  }
+
   function applyTheme(theme: string) {
     const root = document.documentElement
     if (theme === 'system') {
@@ -61,6 +71,7 @@ export const useConfigStore = defineStore('config', () => {
     saveConfig,
     updateConfig,
     detectVscode,
+    detectCli,
     applyTheme,
   }
 })

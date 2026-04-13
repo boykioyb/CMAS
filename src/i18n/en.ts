@@ -204,6 +204,8 @@ export default {
       launchAtLoginDesc: 'Auto-start when logging in',
     },
     accountSettings: {
+      claudeCliPath: 'Claude CLI Path',
+      claudeCliPathDesc: 'Path to Claude CLI executable (empty = auto-detect)',
       claudeConfigPath: 'Claude Config Path',
       claudeConfigPathDesc: 'Location of Claude configuration file',
       backupDir: 'Backup Directory',

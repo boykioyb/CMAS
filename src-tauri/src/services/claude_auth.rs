@@ -1,9 +1,33 @@
 use anyhow::{Context, Result};
 use std::process::Command;
 
+/// Resolve the claude CLI binary path.
+/// Priority: user config > auto-detect > bare "claude".
+fn cli_path() -> String {
+    // Check user-configured path first
+    if let Some(app_cfg) = read_app_config() {
+        if !app_cfg.claude_cli_path.is_empty()
+            && std::path::Path::new(&app_cfg.claude_cli_path).exists()
+        {
+            return app_cfg.claude_cli_path;
+        }
+    }
+    find_claude_cli().unwrap_or_else(|| "claude".to_string())
+}
+
+/// Read the user's CMAS app config.
+fn read_app_config() -> Option<crate::models::AppConfig> {
+    let home = dirs::home_dir()?;
+    let path = home.join(".claude-switcher").join("config.json");
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 /// Get auth status via `claude auth status`
 pub fn get_auth_status() -> Result<AuthStatus> {
-    let output = Command::new("claude")
+    let claude = cli_path();
+
+    let output = Command::new(&claude)
         .args(["auth", "status", "--json"])
         .output()
         .context("Failed to run claude auth status. Is Claude CLI installed?")?;
@@ -17,7 +41,7 @@ pub fn get_auth_status() -> Result<AuthStatus> {
     }
 
     // Fallback: try without --json
-    let output = Command::new("claude")
+    let output = Command::new(&claude)
         .args(["auth", "status"])
         .output()
         .context("Failed to run claude auth status")?;
@@ -38,7 +62,9 @@ pub fn get_auth_status() -> Result<AuthStatus> {
 
 /// Run `claude auth logout`
 pub fn logout() -> Result<()> {
-    let output = Command::new("claude")
+    let claude = cli_path();
+
+    let output = Command::new(&claude)
         .args(["auth", "logout"])
         .output()
         .context("Failed to run claude auth logout")?;
@@ -75,14 +101,20 @@ pub fn start_login() -> Result<()> {
 pub fn find_claude_cli() -> Option<String> {
     #[cfg(target_os = "macos")]
     {
-        let candidates = [
-            "/usr/local/bin/claude",
-            "/opt/homebrew/bin/claude",
+        // Check well-known install locations first
+        let mut candidates = vec![
+            "/usr/local/bin/claude".to_string(),
+            "/opt/homebrew/bin/claude".to_string(),
         ];
+
+        // ~/.local/bin/claude (official Claude Code installer)
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(home.join(".local/bin/claude").to_string_lossy().to_string());
+        }
 
         for path in &candidates {
             if std::path::Path::new(path).exists() {
-                return Some(path.to_string());
+                return Some(path.clone());
             }
         }
     }
@@ -99,6 +131,24 @@ pub fn find_claude_cli() -> Option<String> {
             let candidate = format!("{}\\claude\\claude.exe", program_files);
             if std::path::Path::new(&candidate).exists() {
                 return Some(candidate);
+            }
+        }
+        // ~/.local/bin/claude.exe (official installer)
+        if let Some(home) = dirs::home_dir() {
+            let candidate = home.join(".local\\bin\\claude.exe");
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
+            }
+        }
+    }
+
+    // Linux: check ~/.local/bin/claude
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(home) = dirs::home_dir() {
+            let candidate = home.join(".local/bin/claude");
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().to_string());
             }
         }
     }

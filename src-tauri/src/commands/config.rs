@@ -34,3 +34,8 @@ pub fn save_app_config(config: AppConfig) -> Result<(), String> {
 pub fn find_vscode() -> Result<Option<String>, String> {
     Ok(crate::services::vscode::find_vscode_path())
 }
+
+#[tauri::command]
+pub fn find_claude_cli() -> Result<Option<String>, String> {
+    Ok(crate::services::claude_auth::find_claude_cli())
+}

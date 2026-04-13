@@ -9,6 +9,8 @@ pub struct AppConfig {
     pub auto_switch_on_empty: bool,
     pub launch_at_login: bool,
     pub claude_config_path: String,
+    #[serde(default)]
+    pub claude_cli_path: String, // empty = auto-detect
     pub backup_dir: String,
     #[serde(default = "default_usage_refresh_interval")]
     pub usage_refresh_interval: u32, // seconds, 0 = disabled
@@ -36,6 +38,7 @@ impl Default for AppConfig {
                 .join(".claude.json")
                 .to_string_lossy()
                 .to_string(),
+            claude_cli_path: String::new(), // empty = auto-detect
             backup_dir: home.join(".claude-switcher").to_string_lossy().to_string(),
             usage_refresh_interval: default_usage_refresh_interval(),
         }

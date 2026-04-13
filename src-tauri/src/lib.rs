@@ -23,6 +23,15 @@ pub fn run() {
             // reads credentials.
             services::keychain::migrate_keychain_account_name();
 
+            // Sync the CLI-refreshed active credentials to the active account's
+            // backup so token health checks don't fail after restart.
+            if let Some(active) = commands::account::load_accounts()
+                .into_iter()
+                .find(|a| a.is_active)
+            {
+                services::keychain::sync_active_credentials_to_backup(&active.id);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -57,6 +66,7 @@ pub fn run() {
             commands::config::get_app_config,
             commands::config::save_app_config,
             commands::config::find_vscode,
+            commands::config::find_claude_cli,
             // Usage API commands
             commands::usage_scraper::scrape_claude_usage,
             commands::usage_scraper::fetch_account_usage,

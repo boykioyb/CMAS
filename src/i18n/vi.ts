@@ -204,6 +204,8 @@ export default {
       launchAtLoginDesc: 'Tự động mở khi đăng nhập',
     },
     accountSettings: {
+      claudeCliPath: 'Đường dẫn Claude CLI',
+      claudeCliPathDesc: 'Đường dẫn đến Claude CLI (để trống = tự phát hiện)',
       claudeConfigPath: 'Đường dẫn Claude config',
       claudeConfigPathDesc: 'Vị trí file cấu hình Claude',
       backupDir: 'Thư mục backup',

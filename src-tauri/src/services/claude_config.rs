@@ -4,7 +4,24 @@ use std::path::PathBuf;
 
 use crate::models::OAuthAccount;
 
+/// Read the user's CMAS app config to get path overrides.
+fn read_app_config() -> Option<crate::models::AppConfig> {
+    let home = dirs::home_dir()?;
+    let path = home.join(".claude-switcher").join("config.json");
+    let content = fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
 pub fn get_config_path() -> PathBuf {
+    // Use user-configured path if set and the file exists
+    if let Some(app_cfg) = read_app_config() {
+        let custom = PathBuf::from(&app_cfg.claude_config_path);
+        if !app_cfg.claude_config_path.is_empty() && custom.exists() {
+            return custom;
+        }
+    }
+
+    // Default: auto-detect
     let home = dirs::home_dir().unwrap_or_default();
     let primary = home.join(".claude").join(".claude.json");
     if primary.exists() {

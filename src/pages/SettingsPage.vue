@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { getVersion } from '@tauri-apps/api/app'
 import { useConfigStore } from '@/stores/configStore'
 import { useUiStore } from '@/stores/uiStore'
 import { Settings, User, Code, Info, Sun, Moon, Monitor, Search as SearchIcon } from 'lucide-vue-next'
@@ -12,6 +13,11 @@ const uiStore = useUiStore()
 const activeTab = ref('general')
 const detecting = ref(false)
 const detectingCli = ref(false)
+const appVersion = ref('...')
+
+onMounted(async () => {
+  appVersion.value = await getVersion()
+})
 
 const tabs = computed(() => [
   { key: 'general', label: t('settings.tabs.general'), icon: Settings },
@@ -261,7 +267,7 @@ function setTheme(theme: 'light' | 'dark' | 'system') {
           <img src="@/assets/hero.png" alt="CMAS" class="w-12 h-12 rounded-xl" />
           <div>
             <h2 class="text-lg font-bold text-gray-900 dark:text-white">Claude Multi Account Switcher</h2>
-            <p class="text-sm text-gray-500">{{ t('settings.about.version') }}: 1.0.0</p>
+            <p class="text-sm text-gray-500">{{ t('settings.about.version') }}: {{ appVersion }}</p>
           </div>
         </div>
 

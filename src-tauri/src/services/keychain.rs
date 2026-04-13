@@ -35,30 +35,99 @@ fn get_os_username() -> String {
     })
 }
 
-pub fn read_active_credentials() -> Result<String> {
-    let username = get_os_username();
-    let entry = keyring::Entry::new(ACTIVE_SERVICE, &username)
-        .context("Failed to create keyring entry")?;
+// ── Platform-specific keychain primitives ────────────────────────────────
+//
+// macOS: use `/usr/bin/security` CLI so the ACL is tied to a stable system
+//        binary instead of the CMAS app binary.  This prevents the "wants to
+//        use your confidential information" prompt after every app update.
+//
+// Windows / Linux: use the `keyring` crate (Credential Manager / Secret
+//                  Service) which doesn't have the same ACL issue.
 
+#[cfg(target_os = "macos")]
+fn kc_read(service: &str, account: &str) -> Result<String> {
+    let output = std::process::Command::new("security")
+        .args(["find-generic-password", "-s", service, "-a", account, "-w"])
+        .output()
+        .context("Failed to run security command")?;
+
+    if output.status.success() {
+        let password = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !password.is_empty() {
+            return Ok(password);
+        }
+    }
+    Err(anyhow::anyhow!("No credentials found for {}/{}", service, account))
+}
+
+#[cfg(target_os = "macos")]
+fn kc_write(service: &str, account: &str, password: &str) -> Result<()> {
+    // Delete existing entry first (ignore errors)
+    let _ = std::process::Command::new("security")
+        .args(["delete-generic-password", "-s", service, "-a", account])
+        .output();
+
+    let output = std::process::Command::new("security")
+        .args([
+            "add-generic-password",
+            "-s", service,
+            "-a", account,
+            "-w", password,
+        ])
+        .output()
+        .context("Failed to run security command")?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(anyhow::anyhow!("Failed to write to keychain: {}", stderr))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn kc_delete(service: &str, account: &str) {
+    let _ = std::process::Command::new("security")
+        .args(["delete-generic-password", "-s", service, "-a", account])
+        .output();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn kc_read(service: &str, account: &str) -> Result<String> {
+    let entry = keyring::Entry::new(service, account)
+        .context("Failed to create keyring entry")?;
     entry
         .get_password()
-        .map_err(|_| anyhow::anyhow!("No active credentials found in Keychain"))
+        .map_err(|_| anyhow::anyhow!("No credentials found for {}/{}", service, account))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn kc_write(service: &str, account: &str, password: &str) -> Result<()> {
+    let entry = keyring::Entry::new(service, account)
+        .context("Failed to create keyring entry")?;
+    let _ = entry.delete_credential();
+    entry
+        .set_password(password)
+        .map_err(|e| anyhow::anyhow!("Failed to write credentials: {}", e))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn kc_delete(service: &str, account: &str) {
+    if let Ok(entry) = keyring::Entry::new(service, account) {
+        let _ = entry.delete_credential();
+    }
+}
+
+// ── Public API (platform-agnostic) ───────────────────────────────────────
+
+pub fn read_active_credentials() -> Result<String> {
+    let username = get_os_username();
+    kc_read(ACTIVE_SERVICE, &username)
 }
 
 /// Core function: write credentials to keychain for a specific account name.
-/// The account name determines which keychain entry the Claude Code
-/// extension will read.  The extension uses `process.env.USER` as the account
-/// name, so by varying the account name we can isolate per-VSCode sessions.
 fn write_credentials_for_user(account_name: &str, creds: &str) -> Result<()> {
-    let entry = keyring::Entry::new(ACTIVE_SERVICE, account_name)
-        .context("Failed to create keyring entry")?;
-
-    // Delete existing entry first (ignore errors)
-    let _ = entry.delete_credential();
-
-    entry
-        .set_password(creds)
-        .map_err(|e| anyhow::anyhow!("Failed to write credentials to Keychain: {}", e))
+    kc_write(ACTIVE_SERVICE, account_name, creds)
 }
 
 /// Write credentials to the global keychain entry (used by CLI and default
@@ -69,44 +138,23 @@ pub fn write_active_credentials(creds: &str) -> Result<()> {
 }
 
 /// Write credentials to an isolated per-session keychain entry.
-/// Used when opening VSCode — each VSCode instance gets its own keychain entry
-/// so switching accounts elsewhere doesn't affect it.
 pub fn write_session_credentials(session_key: &str, creds: &str) -> Result<()> {
     write_credentials_for_user(session_key, creds)
 }
 
 pub fn backup_credentials(account_id: &str, creds: &str) -> Result<()> {
     let service = backup_service(account_id);
-    let entry = keyring::Entry::new(&service, "claude-code")
-        .context("Failed to create keyring entry")?;
-
-    // Delete existing entry first (ignore errors)
-    let _ = entry.delete_credential();
-
-    entry
-        .set_password(creds)
-        .map_err(|e| anyhow::anyhow!("Failed to backup credentials: {}", e))
+    kc_write(&service, "claude-code", creds)
 }
 
 pub fn restore_credentials(account_id: &str) -> Result<String> {
     let service = backup_service(account_id);
-    let entry = keyring::Entry::new(&service, "claude-code")
-        .context("Failed to create keyring entry")?;
-
-    entry.get_password().map_err(|_| {
-        anyhow::anyhow!(
-            "No backup credentials found for account {}",
-            account_id
-        )
-    })
+    kc_read(&service, "claude-code")
 }
 
 pub fn delete_credentials(account_id: &str) -> Result<()> {
     let service = backup_service(account_id);
-    let entry = keyring::Entry::new(&service, "claude-code")
-        .context("Failed to create keyring entry")?;
-
-    let _ = entry.delete_credential();
+    kc_delete(&service, "claude-code");
     Ok(())
 }
 
@@ -125,9 +173,6 @@ pub fn sync_active_credentials_to_backup(active_account_id: &str) {
 /// One-time migration: if the old keychain entry (account="claude-code") exists
 /// but the correct entry (account=OS_USERNAME) does not, copy it over.
 /// Also cleans up the stale old entry.
-///
-/// Additionally handles migration from the old `security` CLI hex-encoded format
-/// to the new `keyring` crate format on macOS.
 pub fn migrate_keychain_account_name() {
     let username = get_os_username();
     if username == "claude-code" {
@@ -135,63 +180,17 @@ pub fn migrate_keychain_account_name() {
     }
 
     // Check if the correct entry already exists
-    let correct_entry = match keyring::Entry::new(ACTIVE_SERVICE, &username) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    if correct_entry.get_password().is_ok() {
+    if kc_read(ACTIVE_SERVICE, &username).is_ok() {
         // Correct entry exists; clean up old entry if present
-        if let Ok(old_entry) = keyring::Entry::new(ACTIVE_SERVICE, "claude-code") {
-            let _ = old_entry.delete_credential();
-        }
+        kc_delete(ACTIVE_SERVICE, "claude-code");
         return;
     }
 
     // Try reading from the old "claude-code" account entry
-    if let Ok(old_entry) = keyring::Entry::new(ACTIVE_SERVICE, "claude-code") {
-        if let Ok(creds) = old_entry.get_password() {
-            if !creds.is_empty() {
-                // Write to the correct entry
-                let _ = write_active_credentials(&creds);
-                // Delete old entry
-                let _ = old_entry.delete_credential();
-                return;
-            }
-        }
-    }
-
-    // macOS fallback: try reading via the old `security` CLI in case credentials
-    // were stored with hex encoding that the keyring crate can't read directly.
-    #[cfg(target_os = "macos")]
-    {
-        let old_creds = std::process::Command::new("security")
-            .args([
-                "find-generic-password",
-                "-s",
-                ACTIVE_SERVICE,
-                "-a",
-                "claude-code",
-                "-w",
-            ])
-            .output();
-
-        if let Ok(output) = old_creds {
-            if output.status.success() {
-                let creds = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !creds.is_empty() {
-                    let _ = write_active_credentials(&creds);
-                    let _ = std::process::Command::new("security")
-                        .args([
-                            "delete-generic-password",
-                            "-s",
-                            ACTIVE_SERVICE,
-                            "-a",
-                            "claude-code",
-                        ])
-                        .output();
-                }
-            }
+    if let Ok(creds) = kc_read(ACTIVE_SERVICE, "claude-code") {
+        if !creds.is_empty() {
+            let _ = write_active_credentials(&creds);
+            kc_delete(ACTIVE_SERVICE, "claude-code");
         }
     }
 }

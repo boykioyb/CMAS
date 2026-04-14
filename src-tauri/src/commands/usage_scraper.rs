@@ -207,9 +207,15 @@ fn extract_access_token(creds: &str) -> Option<String> {
 }
 
 /// Fetch real usage data via Claude OAuth API (active account).
+/// Reads from CMAS backup (not global keychain) to avoid macOS keychain prompts.
 #[tauri::command]
 pub async fn scrape_claude_usage() -> Result<RealUsageData, String> {
-    let creds = keychain::read_active_credentials().map_err(|e| format!("{}", e))?;
+    // Find active account and read from its backup
+    let accounts = super::account::load_accounts();
+    let active = accounts.iter().find(|a| a.is_active)
+        .ok_or("No active account")?;
+    let creds = keychain::restore_credentials(&active.id)
+        .map_err(|e| format!("{}", e))?;
     let token = extract_access_token(&creds).ok_or("No access token in credentials")?;
     fetch_usage_via_api(&token)
 }

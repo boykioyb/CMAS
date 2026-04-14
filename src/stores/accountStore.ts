@@ -248,15 +248,6 @@ export const useAccountStore = defineStore('accounts', () => {
     }
   }
 
-  /** Lightweight sync: copy CLI-refreshed active credentials to backup */
-  async function syncActiveCredentials(): Promise<void> {
-    try {
-      await invoke('sync_active_credentials')
-    } catch {
-      // Silently fail
-    }
-  }
-
   return {
     accounts,
     loading,
@@ -294,6 +285,5 @@ export const useAccountStore = defineStore('accounts', () => {
     openClaudeLogin,
     syncAndCheckAllTokens,
     refreshAccountToken,
-    syncActiveCredentials,
   }
 })

@@ -85,15 +85,20 @@ pub fn add_current_account(label: Option<String>) -> Result<Account, String> {
     // Save the full oauthAccount config blob (all fields)
     let oauth_config = claude_config::read_full_oauth_account().ok();
 
-    // Backup current credentials
+    // Read credentials ONCE from active keychain (may prompt on macOS),
+    // then re-write with -A ACL so future reads are prompt-free.
     let id = uuid::Uuid::new_v4().to_string();
-    if let Ok(creds) = keychain::read_active_credentials() {
-        keychain::backup_credentials(&id, &creds).map_err(|e| e.to_string())?;
+    let active_creds = keychain::read_active_credentials().ok();
+
+    if let Some(ref creds) = active_creds {
+        keychain::backup_credentials(&id, creds).map_err(|e| e.to_string())?;
+        // Re-write to active keychain with -A ACL to prevent future prompts
+        let _ = keychain::write_active_credentials(creds);
     }
 
-    // Detect plan from credentials
-    let plan = if let Ok(creds_str) = keychain::read_active_credentials() {
-        if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_str) {
+    // Detect plan from already-read credentials (no second keychain read)
+    let plan = if let Some(ref creds_str) = active_creds {
+        if let Ok(creds) = serde_json::from_str::<serde_json::Value>(creds_str) {
             let sub_type = creds
                 .get("claudeAiOauth")
                 .and_then(|o| o.get("subscriptionType"))

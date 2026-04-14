@@ -9,10 +9,12 @@ pub fn auth_backup_current() -> Result<Option<String>, String> {
         .ok()
         .map(|a| a.email_address);
 
-    // Backup current credentials to a temp slot
+    // Backup current credentials to a temp slot.
+    // After reading, re-write with -A ACL so future reads are prompt-free.
     if let Ok(creds) = keychain::read_active_credentials() {
         keychain::backup_credentials("__temp_current__", &creds)
             .map_err(|e| format!("Failed to backup credentials: {}", e))?;
+        let _ = keychain::write_active_credentials(&creds);
     }
 
     Ok(current_email)
@@ -82,11 +84,18 @@ pub fn auth_confirm_new_account(label: Option<String>) -> Result<Account, String
 
     let mut accounts = super::account::load_accounts();
 
+    // Read credentials ONCE from active keychain (may prompt on macOS),
+    // then re-write with -A ACL so future reads are prompt-free.
+    let active_creds = keychain::read_active_credentials().ok();
+    if let Some(ref creds) = active_creds {
+        let _ = keychain::write_active_credentials(creds);
+    }
+
     // Check if already exists
     if let Some(existing) = accounts.iter().find(|a| a.account_uuid == oauth.account_uuid).cloned() {
         // Account exists - update credentials backup and oauth_config
-        if let Ok(creds) = keychain::read_active_credentials() {
-            let _ = keychain::backup_credentials(&existing.id, &creds);
+        if let Some(ref creds) = active_creds {
+            let _ = keychain::backup_credentials(&existing.id, creds);
         }
         // Update oauth_config for existing account
         if let Ok(oauth_cfg) = claude_config::read_full_oauth_account() {
@@ -102,17 +111,17 @@ pub fn auth_confirm_new_account(label: Option<String>) -> Result<Account, String
     let id = uuid::Uuid::new_v4().to_string();
 
     // Backup the new account's credentials
-    if let Ok(creds) = keychain::read_active_credentials() {
-        keychain::backup_credentials(&id, &creds)
+    if let Some(ref creds) = active_creds {
+        keychain::backup_credentials(&id, creds)
             .map_err(|e| format!("Failed to backup new credentials: {}", e))?;
     }
 
     // Save the full oauthAccount config blob
     let oauth_config = claude_config::read_full_oauth_account().ok();
 
-    // Detect plan from credentials
-    let plan = if let Ok(creds_str) = keychain::read_active_credentials() {
-        if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_str) {
+    // Detect plan from already-read credentials (no second keychain read)
+    let plan = if let Some(ref creds_str) = active_creds {
+        if let Ok(creds) = serde_json::from_str::<serde_json::Value>(creds_str) {
             let sub_type = creds
                 .get("claudeAiOauth")
                 .and_then(|o| o.get("subscriptionType"))

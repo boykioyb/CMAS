@@ -183,18 +183,14 @@ pub struct QuotaSummary {
     pub subscription_type: Option<String>,
 }
 
-/// Sync active credentials + check all tokens + auto-refresh expired ones.
-/// Returns a summary of each account's token status.
+/// Check all tokens + auto-refresh expired ones.
+/// Reads only from CMAS backup entries (never from the global active keychain)
+/// to avoid macOS keychain password prompts.
 #[tauri::command]
 pub fn sync_and_check_all_tokens() -> Result<Vec<TokenSyncResult>, String> {
     let accounts = super::account::load_accounts();
 
-    // 1. Sync active account's credentials from keychain to backup
-    if let Some(active) = accounts.iter().find(|a| a.is_active) {
-        keychain::sync_active_credentials_to_backup(&active.id);
-    }
-
-    // 2. Check each account and auto-refresh if needed
+    // Check each account and auto-refresh if needed
     let mut results = Vec::new();
 
     for account in &accounts {
@@ -430,15 +426,6 @@ pub fn refresh_account_token(account_id: String) -> Result<TokenSyncResult, Stri
     }
 }
 
-/// Sync active credentials to backup only (lightweight, no API calls).
-#[tauri::command]
-pub fn sync_active_credentials() -> Result<(), String> {
-    let accounts = super::account::load_accounts();
-    if let Some(active) = accounts.iter().find(|a| a.is_active) {
-        keychain::sync_active_credentials_to_backup(&active.id);
-    }
-    Ok(())
-}
 
 #[derive(serde::Serialize, Clone)]
 pub struct TokenSyncResult {

@@ -350,9 +350,16 @@ pub fn read_credential_metadata_pub() -> (Option<String>, Option<String>) {
     read_credential_metadata()
 }
 
-/// Read subscription type and rate limit tier from Keychain credentials
+/// Read subscription type and rate limit tier from the active account's backup.
+/// Uses CMAS backup (not global keychain) to avoid macOS keychain prompts.
 fn read_credential_metadata() -> (Option<String>, Option<String>) {
-    if let Ok(creds_str) = crate::services::keychain::read_active_credentials() {
+    // Find active account and read from its backup
+    let accounts = crate::commands::account::load_accounts();
+    let active = match accounts.iter().find(|a| a.is_active) {
+        Some(a) => a,
+        None => return (None, None),
+    };
+    if let Ok(creds_str) = crate::services::keychain::restore_credentials(&active.id) {
         if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_str) {
             let oauth = creds.get("claudeAiOauth").unwrap_or(&creds);
             let sub_type = oauth

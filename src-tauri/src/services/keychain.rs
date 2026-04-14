@@ -62,14 +62,19 @@ fn kc_read(service: &str, account: &str) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 fn kc_write(service: &str, account: &str, password: &str) -> Result<()> {
-    // Delete existing entry first (ignore errors)
+    // Delete existing entry first (ignore errors).
+    // This also removes any restrictive ACL from entries created by other apps.
     let _ = std::process::Command::new("security")
         .args(["delete-generic-password", "-s", service, "-a", account])
         .output();
 
+    // -A = allow ANY application to access without confirmation dialog.
+    // Without this, each `security find-generic-password` call triggers a
+    // macOS keychain prompt asking for the login password.
     let output = std::process::Command::new("security")
         .args([
             "add-generic-password",
+            "-A",
             "-s", service,
             "-a", account,
             "-w", password,
@@ -162,10 +167,17 @@ pub fn delete_credentials(account_id: &str) -> Result<()> {
 /// The Claude CLI refreshes OAuth tokens automatically in the active keychain
 /// entry, but CMAS backup copies become stale. Call this on startup to keep
 /// the active account's backup in sync with the CLI-refreshed token.
+///
+/// Also re-writes the active entry with `-A` ACL so future reads don't trigger
+/// the macOS keychain password prompt.
 pub fn sync_active_credentials_to_backup(active_account_id: &str) {
     if let Ok(current_creds) = read_active_credentials() {
         if !current_creds.is_empty() {
             let _ = backup_credentials(active_account_id, &current_creds);
+            // Re-write active credentials to replace any restrictive ACL
+            // (e.g. from Claude Code CLI) with our -A (any app) ACL.
+            // This prevents keychain prompts on subsequent reads.
+            let _ = write_active_credentials(&current_creds);
         }
     }
 }

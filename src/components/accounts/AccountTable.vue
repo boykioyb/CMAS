@@ -56,6 +56,15 @@ async function checkHealth(accountId: string) {
     if (result.valid) {
       const org = result.organization_name ? ` (${result.organization_name})` : ''
       uiStore.showToast('success', `Token OK${org}`)
+    } else if (result.status === 'expired' || result.status === 'auth_error') {
+      // Auto-refresh expired tokens
+      uiStore.showToast('info', 'Token expired, refreshing...')
+      const refreshResult = await accountStore.refreshAccountToken(accountId)
+      if (refreshResult.refreshed) {
+        uiStore.showToast('success', 'Token refreshed successfully')
+      } else {
+        uiStore.showToast('error', refreshResult.message || 'Refresh failed — please re-login')
+      }
     } else {
       uiStore.showToast('error', result.error_message || `Token ${result.status}`)
     }

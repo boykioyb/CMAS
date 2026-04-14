@@ -118,6 +118,13 @@ export interface TokenHealthResult {
   error_message?: string
 }
 
+export interface TokenSyncResult {
+  account_id: string
+  status: string
+  refreshed: boolean
+  message: string
+}
+
 export interface CostUsageRecord {
   timestamp: string
   account_email: string

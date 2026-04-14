@@ -62,6 +62,9 @@ pub fn run() {
             commands::quota::get_daily_activity,
             commands::quota::get_quota_summary,
             commands::quota::check_account_token,
+            commands::quota::sync_and_check_all_tokens,
+            commands::quota::refresh_account_token,
+            commands::quota::sync_active_credentials,
             // Config commands
             commands::config::get_app_config,
             commands::config::save_app_config,

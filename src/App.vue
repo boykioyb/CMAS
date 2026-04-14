@@ -13,6 +13,7 @@ const accountStore = useAccountStore()
 const costUsageStore = useCostUsageStore()
 
 let usagePollingTimer: ReturnType<typeof setInterval> | null = null
+let healthCheckTimer: ReturnType<typeof setInterval> | null = null
 
 function startUsagePolling() {
   stopUsagePolling()
@@ -32,22 +33,42 @@ function stopUsagePolling() {
   }
 }
 
+function startHealthCheckPolling() {
+  stopHealthCheckPolling()
+  // Sync credentials every 2 minutes (lightweight, no API calls)
+  // Full health check + auto-refresh every 5 minutes
+  healthCheckTimer = setInterval(() => {
+    accountStore.syncAndCheckAllTokens()
+  }, 5 * 60 * 1000)
+}
+
+function stopHealthCheckPolling() {
+  if (healthCheckTimer) {
+    clearInterval(healthCheckTimer)
+    healthCheckTimer = null
+  }
+}
+
 onMounted(() => {
   // Run in parallel, don't block rendering
   configStore.loadConfig().then(() => {
     configStore.applyTheme(configStore.config.theme)
     locale.value = configStore.config.language
     startUsagePolling()
+    startHealthCheckPolling()
   })
   accountStore.fetchAccounts().then(() => {
     // Background: fetch OAuth usage for all accounts so Accounts tab loads instantly
     accountStore.fetchAllAccountUsage()
+    // Background: sync + check all tokens (detect expired, auto-refresh)
+    accountStore.syncAndCheckAllTokens()
   })
   costUsageStore.sync()
 })
 
 onUnmounted(() => {
   stopUsagePolling()
+  stopHealthCheckPolling()
 })
 
 // Restart polling when interval changes

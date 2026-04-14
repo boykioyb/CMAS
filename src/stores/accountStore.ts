@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { Account, AccountUpdate, QuotaSummary, SwitchResult, UsageInfo, TokenHealthResult, RealUsageData } from '@/types'
+import type { Account, AccountUpdate, QuotaSummary, SwitchResult, UsageInfo, TokenHealthResult, RealUsageData, TokenSyncResult } from '@/types'
 
 export const useAccountStore = defineStore('accounts', () => {
   const accounts = ref<Account[]>([])
@@ -215,6 +215,48 @@ export const useAccountStore = defineStore('accounts', () => {
     await invoke('open_claude_login')
   }
 
+  /** Sync active credentials + check all tokens + auto-refresh expired ones */
+  async function syncAndCheckAllTokens(): Promise<TokenSyncResult[]> {
+    try {
+      const results = await invoke<TokenSyncResult[]>('sync_and_check_all_tokens')
+      // Update local account statuses
+      for (const result of results) {
+        const idx = accounts.value.findIndex(a => a.id === result.account_id)
+        if (idx >= 0) {
+          accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
+        }
+      }
+      return results
+    } catch (e) {
+      console.error('syncAndCheckAllTokens failed:', e)
+      return []
+    }
+  }
+
+  /** Manually refresh a specific account's token */
+  async function refreshAccountToken(accountId: string): Promise<TokenSyncResult> {
+    healthChecking.value.add(accountId)
+    try {
+      const result = await invoke<TokenSyncResult>('refresh_account_token', { accountId })
+      const idx = accounts.value.findIndex(a => a.id === accountId)
+      if (idx >= 0) {
+        accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
+      }
+      return result
+    } finally {
+      healthChecking.value.delete(accountId)
+    }
+  }
+
+  /** Lightweight sync: copy CLI-refreshed active credentials to backup */
+  async function syncActiveCredentials(): Promise<void> {
+    try {
+      await invoke('sync_active_credentials')
+    } catch {
+      // Silently fail
+    }
+  }
+
   return {
     accounts,
     loading,
@@ -250,5 +292,8 @@ export const useAccountStore = defineStore('accounts', () => {
     fetchAllAccountUsage,
     fetchAllAccountUsageIfStale,
     openClaudeLogin,
+    syncAndCheckAllTokens,
+    refreshAccountToken,
+    syncActiveCredentials,
   }
 })

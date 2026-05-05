@@ -129,8 +129,13 @@ pub fn switch_and_open_vscode(
 
     // Get the target account's selected project if no explicit folder
     let project_folder = folder_path.or_else(|| {
-        target.selected_project.and_then(|idx| {
-            target.projects.get(idx).map(|p| p.path.clone())
+        let registry = crate::services::project_registry::load();
+        target.selected_project_id.as_ref().and_then(|pid| {
+            registry
+                .projects
+                .iter()
+                .find(|p| &p.id == pid)
+                .map(|p| p.path.clone())
         })
     });
 

@@ -2,7 +2,7 @@
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useConfigStore } from '@/stores/configStore'
-import { LayoutDashboard, Users, DollarSign, Settings, Sun, Moon, Monitor } from 'lucide-vue-next'
+import { LayoutDashboard, Users, FolderTree, DollarSign, Settings, Sun, Moon, Monitor } from 'lucide-vue-next'
 import { computed } from 'vue'
 
 const { t, locale } = useI18n()
@@ -13,6 +13,7 @@ const configStore = useConfigStore()
 const navItems = computed(() => [
   { path: '/', name: 'dashboard', label: t('nav.dashboard'), icon: LayoutDashboard },
   { path: '/accounts', name: 'accounts', label: t('nav.accounts'), icon: Users },
+  { path: '/projects', name: 'projects', label: t('nav.projects'), icon: FolderTree },
   { path: '/usage', name: 'usage', label: t('nav.usage'), icon: DollarSign },
   { path: '/settings', name: 'settings', label: t('nav.settings'), icon: Settings },
 ])

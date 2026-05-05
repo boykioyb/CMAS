@@ -1,8 +1,48 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Instant;
 
-const OAUTH_TOKEN_ENDPOINT: &str = "https://console.anthropic.com/v1/oauth/token";
+const OAUTH_TOKEN_ENDPOINT: &str = "https://platform.claude.com/v1/oauth/token";
 const OAUTH_CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+
+/// Cooldown duration after a failed refresh (5 minutes).
+const REFRESH_COOLDOWN_SECS: u64 = 300;
+
+lazy_static::lazy_static! {
+    /// Tracks last failed refresh time per account to prevent hammering the API.
+    static ref REFRESH_COOLDOWNS: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
+}
+
+/// Check if an account is in cooldown (recently failed refresh).
+pub fn is_in_cooldown(account_id: &str) -> bool {
+    if let Ok(cooldowns) = REFRESH_COOLDOWNS.lock() {
+        if let Some(failed_at) = cooldowns.get(account_id) {
+            return failed_at.elapsed().as_secs() < REFRESH_COOLDOWN_SECS;
+        }
+    }
+    false
+}
+
+/// Record a failed refresh for cooldown tracking.
+fn set_cooldown(account_id: &str) {
+    if let Ok(mut cooldowns) = REFRESH_COOLDOWNS.lock() {
+        cooldowns.insert(account_id.to_string(), Instant::now());
+    }
+}
+
+/// Clear cooldown after a successful refresh.
+fn clear_cooldown(account_id: &str) {
+    if let Ok(mut cooldowns) = REFRESH_COOLDOWNS.lock() {
+        cooldowns.remove(account_id);
+    }
+}
+
+/// Public: clear cooldown for re-auth scenarios.
+pub fn clear_cooldown_for(account_id: &str) {
+    clear_cooldown(account_id);
+}
 
 /// Token info extracted from stored credentials.
 #[derive(Debug, Clone)]
@@ -38,10 +78,17 @@ pub fn extract_token_info(creds: &str) -> Option<TokenInfo> {
 
     let access_token = oauth.get("accessToken")?.as_str()?.to_string();
     let refresh_token = oauth.get("refreshToken")?.as_str()?.to_string();
-    let expires_at = oauth
-        .get("expiresAt")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
+    let expires_at = oauth.get("expiresAt").and_then(|v| {
+        if let Some(s) = v.as_str() {
+            Some(s.to_string())
+        } else if let Some(n) = v.as_i64() {
+            Some(n.to_string())
+        } else if let Some(n) = v.as_f64() {
+            Some((n as i64).to_string())
+        } else {
+            None
+        }
+    });
 
     Some(TokenInfo {
         access_token,
@@ -81,6 +128,7 @@ pub fn is_token_expired(token_info: &TokenInfo) -> bool {
 
 /// Refresh an OAuth token using the refresh_token grant.
 /// Returns the new credential JSON string with updated tokens.
+/// Fails immediately on rate limit (429) — no retries.
 pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
     let token_info = extract_token_info(current_creds)
         .context("Failed to extract token info from credentials")?;
@@ -94,6 +142,7 @@ pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
         "refresh_token": token_info.refresh_token,
         "client_id": OAUTH_CLIENT_ID,
     });
+    let body_str = body.to_string();
 
     let output = std::process::Command::new("curl")
         .args([
@@ -101,7 +150,8 @@ pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
             "-m", "15",
             "-X", "POST",
             "-H", "Content-Type: application/json",
-            "-d", &body.to_string(),
+            "-w", "\n%{http_code}",
+            "-d", &body_str,
             OAUTH_TOKEN_ENDPOINT,
         ])
         .output()
@@ -112,19 +162,45 @@ pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
         return Err(anyhow::anyhow!("curl failed: {}", stderr));
     }
 
-    let response_body = String::from_utf8_lossy(&output.stdout).to_string();
+    let raw_output = String::from_utf8_lossy(&output.stdout).to_string();
 
-    // Check for error response
+    // Split response body from HTTP status code (last line)
+    let (response_body, http_status) = match raw_output.rfind('\n') {
+        Some(pos) => {
+            let body = raw_output[..pos].to_string();
+            let code = raw_output[pos + 1..].trim().parse::<u16>().unwrap_or(0);
+            (body, code)
+        }
+        None => (raw_output, 0u16),
+    };
+
+    log::debug!("OAuth refresh: HTTP {}", http_status);
+
+    // Rate limited — fail immediately, no retries
+    if http_status == 429 {
+        log::warn!("Token refresh rate limited (HTTP 429)");
+        return Err(anyhow::anyhow!("Rate limited (HTTP 429)"));
+    }
+
+    // Server error — fail immediately
+    if http_status >= 500 {
+        log::warn!("Token refresh server error (HTTP {})", http_status);
+        return Err(anyhow::anyhow!("Server error (HTTP {})", http_status));
+    }
+
+    // Check for error in response body
     if let Ok(err_json) = serde_json::from_str::<serde_json::Value>(&response_body) {
         if let Some(err) = err_json.get("error") {
             let err_msg = err
                 .as_str()
                 .or_else(|| err.get("message").and_then(|m| m.as_str()))
                 .unwrap_or("Unknown error");
+
             return Err(anyhow::anyhow!("OAuth refresh failed: {}", err_msg));
         }
     }
 
+    // Success — parse token response
     let token_response: OAuthTokenResponse = serde_json::from_str(&response_body)
         .context("Failed to parse OAuth token response")?;
 
@@ -136,7 +212,6 @@ pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
         oauth["accessToken"] = serde_json::Value::String(token_response.access_token);
         oauth["refreshToken"] = serde_json::Value::String(token_response.refresh_token);
 
-        // Update expiresAt if expires_in is provided
         if let Some(expires_in) = token_response.expires_in {
             let expires_at = chrono::Utc::now()
                 + chrono::Duration::seconds(expires_in as i64);
@@ -149,28 +224,45 @@ pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
 
 /// Attempt to refresh credentials for a specific account.
 /// Updates both the backup and (if active) the global keychain.
+/// Respects cooldown — skips if a recent refresh failed within 5 minutes.
 pub fn refresh_account_credentials(account_id: &str, is_active: bool) -> Result<RefreshResult> {
+    // Check cooldown — don't hammer the API after a recent failure
+    if is_in_cooldown(account_id) {
+        log::info!("Account {} is in refresh cooldown, skipping", account_id);
+        return Err(anyhow::anyhow!(
+            "Token refresh on cooldown — will retry automatically in a few minutes"
+        ));
+    }
+
     // Read current backup credentials
     let current_creds = super::keychain::restore_credentials(account_id)
         .context("Failed to read backup credentials")?;
 
     // Attempt refresh
-    let new_creds = refresh_oauth_token(&current_creds)?;
+    match refresh_oauth_token(&current_creds) {
+        Ok(new_creds) => {
+            // Save refreshed credentials to backup
+            super::keychain::backup_credentials(account_id, &new_creds)
+                .context("Failed to save refreshed credentials to backup")?;
 
-    // Save refreshed credentials to backup
-    super::keychain::backup_credentials(account_id, &new_creds)
-        .context("Failed to save refreshed credentials to backup")?;
+            // If this is the active account, also update the global keychain
+            if is_active {
+                super::keychain::write_active_credentials(&new_creds)
+                    .context("Failed to update global keychain with refreshed credentials")?;
+            }
 
-    // If this is the active account, also update the global keychain
-    if is_active {
-        super::keychain::write_active_credentials(&new_creds)
-            .context("Failed to update global keychain with refreshed credentials")?;
+            clear_cooldown(account_id);
+            log::info!("Successfully refreshed token for account {}", account_id);
+
+            Ok(RefreshResult {
+                success: true,
+                message: "Token refreshed successfully".to_string(),
+            })
+        }
+        Err(e) => {
+            set_cooldown(account_id);
+            log::warn!("Token refresh failed for {}, cooldown set: {}", account_id, e);
+            Err(e)
+        }
     }
-
-    log::info!("Successfully refreshed token for account {}", account_id);
-
-    Ok(RefreshResult {
-        success: true,
-        message: "Token refreshed successfully".to_string(),
-    })
 }

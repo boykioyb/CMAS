@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useConfigStore } from '@/stores/configStore'
 import { useAccountStore } from '@/stores/accountStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useCostUsageStore } from '@/stores/costUsageStore'
 import AppNavbar from '@/components/common/AppNavbar.vue'
 import ToastContainer from '@/components/common/ToastContainer.vue'
@@ -10,6 +11,7 @@ import ToastContainer from '@/components/common/ToastContainer.vue'
 const { locale } = useI18n()
 const configStore = useConfigStore()
 const accountStore = useAccountStore()
+const projectStore = useProjectStore()
 const costUsageStore = useCostUsageStore()
 
 let usagePollingTimer: ReturnType<typeof setInterval> | null = null
@@ -35,11 +37,10 @@ function stopUsagePolling() {
 
 function startHealthCheckPolling() {
   stopHealthCheckPolling()
-  // Sync credentials every 2 minutes (lightweight, no API calls)
-  // Full health check + auto-refresh every 5 minutes
+  // Health check + auto-refresh every 1 hour
   healthCheckTimer = setInterval(() => {
     accountStore.syncAndCheckAllTokens()
-  }, 5 * 60 * 1000)
+  }, 60 * 60 * 1000)
 }
 
 function stopHealthCheckPolling() {
@@ -50,19 +51,23 @@ function stopHealthCheckPolling() {
 }
 
 onMounted(() => {
-  // Run in parallel, don't block rendering
+  // 1. Config: local-only, instant
   configStore.loadConfig().then(() => {
     configStore.applyTheme(configStore.config.theme)
     locale.value = configStore.config.language
     startUsagePolling()
     startHealthCheckPolling()
   })
-  accountStore.fetchAccounts().then(() => {
-    // Background: fetch OAuth usage for all accounts so Accounts tab loads instantly
-    accountStore.fetchAllAccountUsage()
-    // Background: sync + check all tokens (detect expired, auto-refresh)
-    accountStore.syncAndCheckAllTokens()
-  })
+
+  // 2. Accounts: local-only, instant — NO external API calls on startup
+  //    refreshAllUsage() reads local JSONL, no HTTP involved
+  //    Token refresh is handled by healthCheckPolling (every 1 hour)
+  accountStore.silentLoadAccounts()
+    .then(() => accountStore.refreshAllUsage())
+    .catch(err => console.warn('Local account load failed:', err))
+
+  projectStore.fetchAll().catch(err => console.warn('Project registry load failed:', err))
+
   costUsageStore.sync()
 })
 

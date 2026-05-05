@@ -40,6 +40,35 @@ export interface ProjectFolder {
   name: string
 }
 
+export type ProjectSource =
+  | { kind: 'scanned'; root_id: string }
+  | { kind: 'manual' }
+
+export interface Project {
+  id: string
+  name: string
+  path: string
+  source: ProjectSource
+  last_seen_at: string
+  missing: boolean
+  favorite: boolean
+}
+
+export interface ScanRoot {
+  id: string
+  path: string
+  max_depth: number
+  enabled: boolean
+  last_scanned_at?: string
+}
+
+export interface ScanSummary {
+  root_id: string
+  scanned: number
+  added: number
+  updated: number
+}
+
 export interface Account {
   id: string
   email: string
@@ -52,7 +81,11 @@ export interface Account {
   is_active: boolean
   status: 'ok' | 'error' | 'expired'
   usage: UsageInfo
+  /** Legacy embedded projects — kept for migration only, ignore in new code */
   projects: ProjectFolder[]
+  project_ids: string[]
+  selected_project_id?: string
+  /** Legacy index — ignored after migration */
   selected_project?: number
   oauth_config?: Record<string, unknown>
 }
@@ -112,7 +145,7 @@ export interface RealUsageData {
 
 export interface TokenHealthResult {
   valid: boolean
-  status: 'ok' | 'expired' | 'auth_error' | 'error' | 'network_error' | 'no_credentials' | 'invalid_credentials'
+  status: 'ok' | 'refreshed' | 'expired' | 'auth_error' | 'error' | 'network_error' | 'no_credentials' | 'invalid_credentials'
   organization_name?: string
   organization_role?: string
   error_message?: string

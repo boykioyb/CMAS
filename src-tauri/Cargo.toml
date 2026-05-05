@@ -32,6 +32,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 dirs = "6"
 anyhow = "1"
+lazy_static = "1"
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

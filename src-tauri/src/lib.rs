@@ -43,6 +43,7 @@ pub fn run() {
             commands::auth::auth_check_login_status,
             commands::auth::auth_confirm_new_account,
             commands::auth::auth_restore_original,
+            commands::auth::auth_reauth_confirm,
             commands::auth::auth_get_status,
             // Switch commands
             commands::switch::switch_account,
@@ -66,6 +67,21 @@ pub fn run() {
             commands::usage_scraper::open_claude_login,
             // Cost usage commands
             commands::cost_usage::get_cost_usage_history,
+            // Project registry commands
+            commands::project::list_projects,
+            commands::project::list_scan_roots,
+            commands::project::get_project_registry,
+            commands::project::add_scan_root,
+            commands::project::remove_scan_root,
+            commands::project::update_scan_root,
+            commands::project::scan_projects,
+            commands::project::scan_single_root,
+            commands::project::add_manual_project,
+            commands::project::remove_project,
+            commands::project::toggle_project_favorite,
+            commands::project::link_project_to_account,
+            commands::project::unlink_project_from_account,
+            commands::project::set_selected_project_id,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

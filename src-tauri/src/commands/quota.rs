@@ -8,16 +8,22 @@ pub fn get_usage_info() -> Result<UsageInfo, String> {
 
 /// Check token health for a specific account by calling the Claude API roles endpoint.
 /// Returns org info if token is valid, or error status if expired/invalid.
+///
+/// Tries `refresh_token` automatically before declaring the account expired:
+/// 1. If `expiresAt` says token is already expired/expiring → refresh proactively first.
+/// 2. If API call returns "expired" → fall back to refresh + retry once.
+/// Only marks the account as Expired when the refresh_token itself is no longer valid.
 #[tauri::command]
 pub fn check_account_token(account_id: String) -> Result<TokenHealthResult, String> {
     let accounts = super::account::load_accounts();
     let account = accounts
         .iter()
         .find(|a| a.id == account_id)
+        .cloned()
         .ok_or("Account not found")?;
 
     // Get credentials from backup
-    let creds = match keychain::restore_credentials(&account.id) {
+    let mut creds = match keychain::restore_credentials(&account.id) {
         Ok(c) => c,
         Err(_) => {
             return Ok(TokenHealthResult {
@@ -30,115 +36,147 @@ pub fn check_account_token(account_id: String) -> Result<TokenHealthResult, Stri
         }
     };
 
-    // Extract OAuth access token
-    let token = match serde_json::from_str::<serde_json::Value>(&creds) {
-        Ok(v) => v
-            .get("claudeAiOauth")
-            .and_then(|o| o.get("accessToken"))
-            .and_then(|t| t.as_str())
-            .map(|s| s.to_string()),
-        Err(_) => None,
-    };
-
-    let token = match token {
-        Some(t) => t,
-        None => {
-            return Ok(TokenHealthResult {
-                valid: false,
-                status: "invalid_credentials".to_string(),
-                organization_name: None,
-                organization_role: None,
-                error_message: Some("Invalid credentials".to_string()),
-            });
+    // Proactive refresh: if expiresAt says we're already expired/about-to-expire,
+    // try refresh_token before hitting the API.
+    let mut refreshed = false;
+    let token_info = token_refresh::extract_token_info(&creds);
+    let proactively_expired = token_info
+        .as_ref()
+        .map(|ti| token_refresh::is_token_expired(ti))
+        .unwrap_or(false);
+    if proactively_expired {
+        log::info!("Manual check: token expired by expiresAt for {}, refreshing first", account_id);
+        if let Ok(_) = token_refresh::refresh_account_credentials(&account_id, account.is_active) {
+            if let Ok(new_creds) = keychain::restore_credentials(&account.id) {
+                creds = new_creds;
+                refreshed = true;
+            }
         }
-    };
+    }
 
-    // Call /api/oauth/claude_cli/roles to check token health
-    let output = std::process::Command::new("curl")
-        .args([
-            "-s",
-            "-m", "10",
-            "-H", &format!("Authorization: Bearer {}", token),
-            "https://api.anthropic.com/api/oauth/claude_cli/roles",
-        ])
-        .output()
-        .map_err(|e| format!("Failed to check token: {}", e))?;
+    // Verify with API (may attempt one more refresh fallback if API still says expired)
+    let mut attempt = 0u8;
+    loop {
+        attempt += 1;
 
-    let body = String::from_utf8_lossy(&output.stdout).to_string();
-
-    match serde_json::from_str::<serde_json::Value>(&body) {
-        Ok(json) => {
-            // Check for error response
-            if let Some(err) = json.get("error") {
-                let err_type = err
-                    .get("type")
+        let token = serde_json::from_str::<serde_json::Value>(&creds)
+            .ok()
+            .and_then(|v| {
+                v.get("claudeAiOauth")
+                    .and_then(|o| o.get("accessToken"))
                     .and_then(|t| t.as_str())
-                    .unwrap_or("unknown");
-                let err_msg = err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("Unknown error");
-
-                let status = if err_msg.contains("expired") {
-                    "expired"
-                } else if err_type == "authentication_error" {
-                    "auth_error"
-                } else {
-                    "error"
-                };
-
-                // Update account status in storage
-                let mut accounts = super::account::load_accounts();
-                if let Some(acc) = accounts.iter_mut().find(|a| a.id == account_id) {
-                    acc.status = if status == "expired" {
-                        crate::models::AccountStatus::Expired
-                    } else {
-                        crate::models::AccountStatus::Error
-                    };
-                    let _ = super::account::save_accounts(&accounts);
-                }
-
+                    .map(|s| s.to_string())
+            });
+        let token = match token {
+            Some(t) if !t.is_empty() => t,
+            _ => {
                 return Ok(TokenHealthResult {
                     valid: false,
-                    status: status.to_string(),
+                    status: "invalid_credentials".to_string(),
                     organization_name: None,
                     organization_role: None,
-                    error_message: Some(err_msg.to_string()),
+                    error_message: Some("Invalid credentials".to_string()),
                 });
             }
+        };
 
-            // Success — extract org info
-            let org_name = json
-                .get("organization_name")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
-            let org_role = json
-                .get("organization_role")
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+        let output = std::process::Command::new("curl")
+            .args([
+                "-s",
+                "-m", "10",
+                "-H", &format!("Authorization: Bearer {}", token),
+                "https://api.anthropic.com/api/oauth/claude_cli/roles",
+            ])
+            .output()
+            .map_err(|e| format!("Failed to check token: {}", e))?;
 
-            // Update account status to Ok
+        let body = String::from_utf8_lossy(&output.stdout).to_string();
+
+        let json = match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(j) => j,
+            Err(_) => {
+                return Ok(TokenHealthResult {
+                    valid: false,
+                    status: "network_error".to_string(),
+                    organization_name: None,
+                    organization_role: None,
+                    error_message: Some("Failed to connect to API".to_string()),
+                });
+            }
+        };
+
+        if let Some(err) = json.get("error") {
+            let err_type = err.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+            let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
+            let is_expired = err_msg.contains("expired");
+
+            // Reactive refresh: API says expired but we haven't tried refresh yet
+            if is_expired && !refreshed && attempt == 1 {
+                log::info!("Manual check: API reports expired for {}, attempting refresh", account_id);
+                if let Ok(_) = token_refresh::refresh_account_credentials(&account_id, account.is_active) {
+                    if let Ok(new_creds) = keychain::restore_credentials(&account.id) {
+                        creds = new_creds;
+                        refreshed = true;
+                        continue;
+                    }
+                }
+            }
+
+            let status = if is_expired {
+                "expired"
+            } else if err_type == "authentication_error" {
+                "auth_error"
+            } else {
+                "error"
+            };
+
             let mut accounts = super::account::load_accounts();
             if let Some(acc) = accounts.iter_mut().find(|a| a.id == account_id) {
-                acc.status = crate::models::AccountStatus::Ok;
+                acc.status = if status == "expired" {
+                    crate::models::AccountStatus::Expired
+                } else {
+                    crate::models::AccountStatus::Error
+                };
                 let _ = super::account::save_accounts(&accounts);
             }
 
-            Ok(TokenHealthResult {
-                valid: true,
-                status: "ok".to_string(),
-                organization_name: org_name,
-                organization_role: org_role,
-                error_message: None,
-            })
+            return Ok(TokenHealthResult {
+                valid: false,
+                status: status.to_string(),
+                organization_name: None,
+                organization_role: None,
+                error_message: Some(err_msg.to_string()),
+            });
         }
-        Err(_) => Ok(TokenHealthResult {
-            valid: false,
-            status: "network_error".to_string(),
-            organization_name: None,
-            organization_role: None,
-            error_message: Some("Failed to connect to API".to_string()),
-        }),
+
+        // Success
+        let org_name = json
+            .get("organization_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let org_role = json
+            .get("organization_role")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        let mut accounts = super::account::load_accounts();
+        if let Some(acc) = accounts.iter_mut().find(|a| a.id == account_id) {
+            acc.status = crate::models::AccountStatus::Ok;
+            let _ = super::account::save_accounts(&accounts);
+        }
+
+        // Clear any cooldown if we just successfully refreshed
+        if refreshed {
+            token_refresh::clear_cooldown_for(&account_id);
+        }
+
+        return Ok(TokenHealthResult {
+            valid: true,
+            status: if refreshed { "refreshed".to_string() } else { "ok".to_string() },
+            organization_name: org_name,
+            organization_role: org_role,
+            error_message: None,
+        });
     }
 }
 

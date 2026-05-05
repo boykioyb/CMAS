@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { useAccountStore } from '@/stores/accountStore'
@@ -11,7 +11,11 @@ const { t } = useI18n()
 const accountStore = useAccountStore()
 const uiStore = useUiStore()
 
-defineProps<{ open: boolean }>()
+const props = defineProps<{
+  open: boolean
+  reauthAccountId?: string | null
+  reauthEmail?: string | null
+}>()
 const emit = defineEmits<{ close: [] }>()
 
 // Flow steps: 'choose' -> 'oauth_waiting' -> 'oauth_detected' -> done
@@ -26,6 +30,23 @@ const detectedOrg = ref('')
 const detectedSubscription = ref('')
 const pollTimer = ref<ReturnType<typeof setInterval> | null>(null)
 const backedUpEmail = ref<string | null>(null)
+
+const isReauth = ref(false)
+
+const reauthMismatch = computed(() => {
+  if (!isReauth.value || !props.reauthEmail || !detectedEmail.value) return false
+  return props.reauthEmail.toLowerCase() !== detectedEmail.value.toLowerCase()
+})
+
+// Auto-start OAuth when opening in reauth mode
+watch(() => props.open, (open) => {
+  if (open && props.reauthAccountId) {
+    isReauth.value = true
+    startOAuthFlow()
+  } else if (open) {
+    isReauth.value = false
+  }
+})
 
 // Reset state when dialog opens
 watch(() => step.value, () => {
@@ -103,16 +124,19 @@ function stopPolling() {
 async function confirmNewAccount() {
   loading.value = true
   try {
-    // Save the new account
-    await invoke('auth_confirm_new_account', { label: label.value || null })
-
-    // Restore original account credentials
-    await invoke('auth_restore_original')
-
-    // Refresh account list
-    await accountStore.fetchAccounts()
-
-    uiStore.showToast('success', t('accounts.addDialog.accountAdded', { email: detectedEmail.value }))
+    if (isReauth.value && props.reauthAccountId) {
+      // Re-auth: update existing account credentials
+      await invoke('auth_reauth_confirm', { accountId: props.reauthAccountId })
+      await invoke('auth_restore_original')
+      await accountStore.fetchAccounts()
+      uiStore.showToast('success', t('accounts.addDialog.reauthSuccess', { email: detectedEmail.value }))
+    } else {
+      // New account
+      await invoke('auth_confirm_new_account', { label: label.value || null })
+      await invoke('auth_restore_original')
+      await accountStore.fetchAccounts()
+      uiStore.showToast('success', t('accounts.addDialog.accountAdded', { email: detectedEmail.value }))
+    }
     resetAndClose()
   } catch (e) {
     uiStore.showToast('error', String(e))
@@ -155,7 +179,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <AppDialog :open="open" :title="t('accounts.addDialog.title')" @close="resetAndClose">
+  <AppDialog :open="open" :title="isReauth ? t('accounts.addDialog.reauthTitle') : t('accounts.addDialog.title')" @close="resetAndClose">
 
     <!-- Step: Choose method -->
     <div v-if="step === 'choose'" class="space-y-3">
@@ -219,16 +243,42 @@ onUnmounted(() => {
 
     <!-- Step: OAuth detected -->
     <div v-else-if="step === 'oauth_detected'" class="space-y-4">
-      <div class="flex items-center gap-3 p-4 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800">
-        <CheckCircle :size="20" class="text-emerald-500 shrink-0" />
+      <div
+        class="flex items-center gap-3 p-4 rounded-xl border"
+        :class="reauthMismatch
+          ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800'
+          : 'bg-emerald-50 dark:bg-emerald-900/20 border-emerald-200 dark:border-emerald-800'"
+      >
+        <CheckCircle v-if="!reauthMismatch" :size="20" class="text-emerald-500 shrink-0" />
+        <CheckCircle v-else :size="20" class="text-red-500 shrink-0" />
         <div>
-          <div class="text-sm font-semibold text-emerald-800 dark:text-emerald-200">{{ t('accounts.addDialog.newAccountDetected') }}</div>
-          <div class="text-sm text-emerald-700 dark:text-emerald-300">{{ detectedEmail }}</div>
-          <div v-if="detectedOrg" class="text-xs text-emerald-600 dark:text-emerald-400">{{ detectedOrg }} · {{ detectedSubscription }}</div>
+          <div
+            class="text-sm font-semibold"
+            :class="reauthMismatch
+              ? 'text-red-800 dark:text-red-200'
+              : 'text-emerald-800 dark:text-emerald-200'"
+          >
+            {{ reauthMismatch
+              ? t('accounts.addDialog.reauthMismatchTitle')
+              : (isReauth ? t('accounts.addDialog.reauthDetected') : t('accounts.addDialog.newAccountDetected')) }}
+          </div>
+          <div
+            class="text-sm"
+            :class="reauthMismatch
+              ? 'text-red-700 dark:text-red-300'
+              : 'text-emerald-700 dark:text-emerald-300'"
+          >{{ detectedEmail }}</div>
+          <div
+            v-if="reauthMismatch"
+            class="text-xs mt-1 text-red-600 dark:text-red-400"
+          >
+            {{ t('accounts.addDialog.reauthMismatchDesc', { expected: props.reauthEmail }) }}
+          </div>
+          <div v-else-if="detectedOrg" class="text-xs text-emerald-600 dark:text-emerald-400">{{ detectedOrg }} · {{ detectedSubscription }}</div>
         </div>
       </div>
 
-      <div>
+      <div v-if="!isReauth">
         <label class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">{{ t('accounts.label') }}</label>
         <input
           v-model="label"
@@ -247,12 +297,12 @@ onUnmounted(() => {
         </button>
         <button
           @click="confirmNewAccount"
-          :disabled="loading"
-          class="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary-500 text-white text-sm font-medium hover:bg-primary-600 disabled:opacity-50 transition-colors whitespace-nowrap"
+          :disabled="loading || reauthMismatch"
+          class="flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-primary-500 text-white text-sm font-medium hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors whitespace-nowrap"
         >
           <Loader2 v-if="loading" :size="16" class="animate-spin" />
           <CheckCircle v-else :size="16" />
-          {{ t('accounts.addDialog.confirmAdd') }}
+          {{ isReauth ? t('accounts.addDialog.reauthUpdateCreds') : t('accounts.addDialog.confirmAdd') }}
         </button>
       </div>
     </div>

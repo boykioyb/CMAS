@@ -151,6 +151,8 @@ pub fn auth_confirm_new_account(label: Option<String>) -> Result<Account, String
         status: AccountStatus::Ok,
         usage: UsageInfo::default(),
         projects: Vec::new(),
+        project_ids: Vec::new(),
+        selected_project_id: None,
         selected_project: None,
         oauth_config,
     };
@@ -189,6 +191,74 @@ pub fn auth_restore_original() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Re-authenticate an existing account: update its credentials after a fresh OAuth login.
+#[tauri::command]
+pub fn auth_reauth_confirm(account_id: String) -> Result<Account, String> {
+    let mut accounts = super::account::load_accounts();
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .cloned()
+        .ok_or("Account not found")?;
+
+    // Verify the signed-in OAuth account matches the account being re-authenticated.
+    // Prevents silently overwriting credentials when the user picks a different
+    // Google account in the browser.
+    let active_oauth = claude_config::get_active_oauth_account()
+        .map_err(|e| format!("Failed to read signed-in account: {}", e))?;
+    if !active_oauth
+        .email_address
+        .eq_ignore_ascii_case(&account.email)
+    {
+        return Err(format!(
+            "Email mismatch: re-auth was for {} but you signed in as {}. Please retry and sign in with the correct account.",
+            account.email, active_oauth.email_address
+        ));
+    }
+
+    // Read new credentials from active keychain (just logged in)
+    let active_creds = keychain::read_active_credentials()
+        .map_err(|e| format!("Failed to read new credentials: {}", e))?;
+
+    // Re-write with -A ACL
+    let _ = keychain::write_active_credentials(&active_creds);
+
+    // Update backup for this account
+    keychain::backup_credentials(&account.id, &active_creds)
+        .map_err(|e| format!("Failed to save credentials: {}", e))?;
+
+    // Update oauth_config
+    let oauth_config = crate::services::claude_config::read_full_oauth_account().ok();
+
+    // Detect plan
+    let plan = if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&active_creds) {
+        let sub_type = creds
+            .get("claudeAiOauth")
+            .and_then(|o| o.get("subscriptionType"))
+            .and_then(|v| v.as_str());
+        match sub_type {
+            Some("free") => AccountPlan::Free,
+            _ => AccountPlan::Pro,
+        }
+    } else {
+        account.plan.clone()
+    };
+
+    // Update the account in storage
+    if let Some(acc) = accounts.iter_mut().find(|a| a.id == account_id) {
+        acc.status = AccountStatus::Ok;
+        acc.plan = plan;
+        acc.oauth_config = oauth_config;
+    }
+    super::account::save_accounts(&accounts)?;
+
+    // Clear any refresh cooldown for this account
+    crate::services::token_refresh::clear_cooldown_for(&account_id);
+
+    let updated = accounts.into_iter().find(|a| a.id == account_id).unwrap();
+    Ok(updated)
 }
 
 /// Get current auth status

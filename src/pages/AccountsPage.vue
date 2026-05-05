@@ -23,6 +23,17 @@ const showDeleteDialog = ref(false)
 const editingAccount = ref<Account | null>(null)
 const deletingId = ref<string | null>(null)
 const refreshing = ref(false)
+const reauthAccount = ref<Account | null>(null)
+
+function handleReauth(account: Account) {
+  reauthAccount.value = account
+  showAddDialog.value = true
+}
+
+function handleAddDialogClose() {
+  showAddDialog.value = false
+  reauthAccount.value = null
+}
 
 
 const filteredAccounts = computed(() => {
@@ -49,11 +60,7 @@ const filteredAccounts = computed(() => {
 
 async function handleSwitchVscode(id: string) {
   try {
-    // Uses the account's selected project + configured VSCode path
-    const result = await accountStore.switchAndOpenVscode(id, undefined, configStore.config.vscode_path || undefined)
-    if (result.success) {
-      uiStore.showToast('success', t('switch.success'))
-    }
+    await accountStore.switchAndOpenVscode(id, undefined, configStore.config.vscode_path || undefined)
   } catch (e) {
     uiStore.showToast('error', String(e))
   }
@@ -84,11 +91,19 @@ async function handleDelete() {
 async function handleRefreshAll() {
   refreshing.value = true
   try {
-    await Promise.all([
+    const [, usageResult] = await Promise.all([
       accountStore.fetchAccounts(),
       accountStore.fetchAllAccountUsage(),
     ])
-    uiStore.showToast('success', t('common.success'))
+    if (usageResult.rateLimited > 0) {
+      uiStore.showToast('warning', t('accounts.rateLimited', { count: usageResult.rateLimited }))
+    } else if (usageResult.failed > 0) {
+      uiStore.showToast('warning', t('accounts.usageFetchFailed', { count: usageResult.failed }))
+    } else {
+      uiStore.showToast('success', t('common.success'))
+    }
+  } catch (e) {
+    uiStore.showToast('error', String(e))
   } finally {
     refreshing.value = false
   }
@@ -207,6 +222,7 @@ const filters = computed(() => [
         @refresh="() => {}"
         @edit="handleEdit"
         @delete="handleDeleteConfirm"
+        @reauth="handleReauth"
       />
       <AccountGrid
         v-else
@@ -214,6 +230,7 @@ const filters = computed(() => [
         @switch-vscode="handleSwitchVscode"
         @edit="handleEdit"
         @delete="handleDeleteConfirm"
+        @reauth="handleReauth"
       />
     </template>
 
@@ -234,7 +251,12 @@ const filters = computed(() => [
     </div>
 
     <!-- Dialogs -->
-    <AddAccountDialog :open="showAddDialog" @close="showAddDialog = false" />
+    <AddAccountDialog
+      :open="showAddDialog"
+      :reauth-account-id="reauthAccount?.id"
+      :reauth-email="reauthAccount?.email"
+      @close="handleAddDialogClose"
+    />
     <EditAccountDialog :open="showEditDialog" :account="editingAccount" @close="showEditDialog = false" />
 
     <!-- Delete confirmation -->

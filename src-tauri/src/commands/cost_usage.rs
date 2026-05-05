@@ -87,10 +87,14 @@ fn calculate_cost(
 
 fn model_display_name(model: &str) -> String {
     let m = model.to_lowercase();
-    if m.contains("opus") && m.contains("4-6") {
+    if m.contains("opus") && m.contains("4-7") {
+        "Opus 4.7".to_string()
+    } else if m.contains("opus") && m.contains("4-6") {
         "Opus 4.6".to_string()
     } else if m.contains("opus") {
         "Opus 4".to_string()
+    } else if m.contains("sonnet") && m.contains("4-7") {
+        "Sonnet 4.7".to_string()
     } else if m.contains("sonnet") && m.contains("4-6") {
         "Sonnet 4.6".to_string()
     } else if m.contains("sonnet") {
@@ -142,14 +146,17 @@ fn save_cache(cache: &CostUsageCache) {
 fn build_project_account_map(
     accounts: &[Account],
 ) -> HashMap<String, (String, Option<String>, String)> {
+    let registry = crate::services::project_registry::load();
     let mut map = HashMap::new();
     for account in accounts {
-        for project in &account.projects {
-            let dir_name = project.path.replace('/', "-").replace('\\', "-");
-            map.insert(
-                dir_name,
-                (account.email.clone(), account.label.clone(), account.id.clone()),
-            );
+        for project_id in &account.project_ids {
+            if let Some(project) = registry.projects.iter().find(|p| &p.id == project_id) {
+                let dir_name = project.path.replace('/', "-").replace('\\', "-");
+                map.insert(
+                    dir_name,
+                    (account.email.clone(), account.label.clone(), account.id.clone()),
+                );
+            }
         }
     }
     map

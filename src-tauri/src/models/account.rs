@@ -13,10 +13,17 @@ pub struct Account {
     pub is_active: bool,
     pub status: AccountStatus,
     pub usage: UsageInfo,
-    /// List of project folders assigned to this account
+    /// Legacy embedded projects (migrated to project registry on load).
+    /// Kept for backward compatibility with old accounts.json files.
     #[serde(default)]
     pub projects: Vec<ProjectFolder>,
-    /// Currently selected project index (for quick open)
+    /// References into the central project registry
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+    /// Currently selected project (registry id)
+    #[serde(default)]
+    pub selected_project_id: Option<String>,
+    /// Legacy index into `projects` — kept for backward compat during migration
     #[serde(default)]
     pub selected_project: Option<usize>,
     /// Full oauthAccount config blob (saved from ~/.claude.json when adding)

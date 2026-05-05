@@ -1,6 +1,20 @@
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, shallowRef, triggerRef } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+
+/** Run async tasks sequentially with a delay between each to avoid rate limiting */
+async function sequential<T>(items: T[], fn: (item: T) => Promise<void>, delayMs = 1000): Promise<void> {
+  for (const item of items) {
+    try {
+      await fn(item)
+    } catch {
+      // Continue with remaining items even if one fails
+    }
+    if (delayMs > 0 && items.indexOf(item) < items.length - 1) {
+      await new Promise(r => setTimeout(r, delayMs))
+    }
+  }
+}
 import type { Account, AccountUpdate, QuotaSummary, SwitchResult, UsageInfo, TokenHealthResult, RealUsageData, TokenSyncResult } from '@/types'
 
 export const useAccountStore = defineStore('accounts', () => {
@@ -26,19 +40,26 @@ export const useAccountStore = defineStore('accounts', () => {
       })[0] || null
   })
 
+  /** Silent load: no loading state, no skeleton — for initial app startup */
+  async function silentLoadAccounts() {
+    try {
+      accounts.value = await invoke<Account[]>('list_accounts')
+    } catch (e) {
+      error.value = String(e)
+    }
+  }
+
+  /** With loading state — for user-triggered manual refresh */
   async function fetchAccounts() {
     loading.value = true
     error.value = null
     try {
-      // Fast load: just accounts without scanning JSONL
       accounts.value = await invoke<Account[]>('list_accounts')
     } catch (e) {
       error.value = String(e)
     } finally {
       loading.value = false
     }
-    // Then refresh usage in background (non-blocking)
-    refreshAllUsage()
   }
 
   async function refreshAllUsage() {
@@ -121,7 +142,33 @@ export const useAccountStore = defineStore('accounts', () => {
     const idx = accounts.value.findIndex(a => a.id === accountId)
     if (idx >= 0) {
       accounts.value[idx].selected_project = projectIndex ?? undefined
+      const account = accounts.value[idx]
+      if (projectIndex == null) {
+        account.selected_project_id = undefined
+      } else {
+        account.selected_project_id = account.project_ids[projectIndex]
+      }
     }
+  }
+
+  async function linkProject(accountId: string, projectId: string): Promise<Account> {
+    const updated = await invoke<Account>('link_project_to_account', { accountId, projectId })
+    const idx = accounts.value.findIndex(a => a.id === accountId)
+    if (idx >= 0) accounts.value[idx] = updated
+    return updated
+  }
+
+  async function unlinkProject(accountId: string, projectId: string): Promise<Account> {
+    const updated = await invoke<Account>('unlink_project_from_account', { accountId, projectId })
+    const idx = accounts.value.findIndex(a => a.id === accountId)
+    if (idx >= 0) accounts.value[idx] = updated
+    return updated
+  }
+
+  async function setSelectedProjectId(accountId: string, projectId: string | null) {
+    await invoke('set_selected_project_id', { accountId, projectId })
+    const idx = accounts.value.findIndex(a => a.id === accountId)
+    if (idx >= 0) accounts.value[idx].selected_project_id = projectId ?? undefined
   }
 
   async function getQuotaSummary(): Promise<QuotaSummary> {
@@ -150,13 +197,16 @@ export const useAccountStore = defineStore('accounts', () => {
   }
 
   async function checkAllTokenHealth(): Promise<void> {
-    await Promise.allSettled(accounts.value.map(a => checkTokenHealth(a.id)))
+    // Run one-by-one with 1.5s delay to avoid rate limiting
+    await sequential(accounts.value, a => checkTokenHealth(a.id).then(() => {}), 1500)
   }
 
   const realUsage = ref<RealUsageData | null>(null)
   const scrapingUsage = ref(false)
   // Per-account real usage data (keyed by account ID)
-  const accountRealUsage = ref<Record<string, RealUsageData>>({})
+  // shallowRef: only trigger reactivity when we explicitly call triggerRef,
+  // avoids re-rendering the entire account list on every single usage fetch
+  const accountRealUsage = shallowRef<Record<string, RealUsageData>>({})
   const fetchingUsageIds = ref<Set<string>>(new Set())
   let lastUsageFetchTime = 0
 
@@ -181,6 +231,7 @@ export const useAccountStore = defineStore('accounts', () => {
     try {
       const data = await invoke<RealUsageData>('fetch_account_usage', { accountId })
       accountRealUsage.value[accountId] = data
+      triggerRef(accountRealUsage) // Manually trigger reactivity for shallowRef
       return data
     } finally {
       fetchingUsageIds.value.delete(accountId)
@@ -195,11 +246,20 @@ export const useAccountStore = defineStore('accounts', () => {
     return accountRealUsage.value[accountId] ?? null
   }
 
-  async function fetchAllAccountUsage(): Promise<void> {
+  async function fetchAllAccountUsage(): Promise<{ ok: number; failed: number; rateLimited: number }> {
     lastUsageFetchTime = Date.now()
-    await Promise.allSettled(
-      accounts.value.map(a => fetchAccountUsage(a.id))
-    )
+    let ok = 0, failed = 0, rateLimited = 0
+    await sequential(accounts.value, async (a) => {
+      const data = await fetchAccountUsage(a.id)
+      if (data.success) {
+        ok++
+      } else if (data.error_message?.includes('Rate limited')) {
+        rateLimited++
+      } else {
+        failed++
+      }
+    }, 1500)
+    return { ok, failed, rateLimited }
   }
 
   /** Only fetch if no data yet or data is older than 30s */
@@ -215,37 +275,61 @@ export const useAccountStore = defineStore('accounts', () => {
     await invoke('open_claude_login')
   }
 
+  // Deduplication: prevent concurrent sync/refresh calls
+  let pendingSyncPromise: Promise<TokenSyncResult[]> | null = null
+  const pendingRefreshes = new Map<string, Promise<TokenSyncResult>>()
+
   /** Sync active credentials + check all tokens + auto-refresh expired ones */
   async function syncAndCheckAllTokens(): Promise<TokenSyncResult[]> {
-    try {
-      const results = await invoke<TokenSyncResult[]>('sync_and_check_all_tokens')
-      // Update local account statuses
-      for (const result of results) {
-        const idx = accounts.value.findIndex(a => a.id === result.account_id)
-        if (idx >= 0) {
-          accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
+    // Dedup: reuse in-flight request
+    if (pendingSyncPromise) return pendingSyncPromise
+
+    pendingSyncPromise = (async () => {
+      try {
+        const results = await invoke<TokenSyncResult[]>('sync_and_check_all_tokens')
+        // Update local account statuses
+        for (const result of results) {
+          const idx = accounts.value.findIndex(a => a.id === result.account_id)
+          if (idx >= 0) {
+            accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
+          }
         }
+        return results
+      } catch (e) {
+        console.error('syncAndCheckAllTokens failed:', e)
+        return []
+      } finally {
+        pendingSyncPromise = null
       }
-      return results
-    } catch (e) {
-      console.error('syncAndCheckAllTokens failed:', e)
-      return []
-    }
+    })()
+
+    return pendingSyncPromise
   }
 
   /** Manually refresh a specific account's token */
   async function refreshAccountToken(accountId: string): Promise<TokenSyncResult> {
+    // Dedup: reuse in-flight refresh for same account
+    const pending = pendingRefreshes.get(accountId)
+    if (pending) return pending
+
     healthChecking.value.add(accountId)
-    try {
-      const result = await invoke<TokenSyncResult>('refresh_account_token', { accountId })
-      const idx = accounts.value.findIndex(a => a.id === accountId)
-      if (idx >= 0) {
-        accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
+
+    const refreshPromise = (async () => {
+      try {
+        const result = await invoke<TokenSyncResult>('refresh_account_token', { accountId })
+        const idx = accounts.value.findIndex(a => a.id === accountId)
+        if (idx >= 0) {
+          accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
+        }
+        return result
+      } finally {
+        healthChecking.value.delete(accountId)
+        pendingRefreshes.delete(accountId)
       }
-      return result
-    } finally {
-      healthChecking.value.delete(accountId)
-    }
+    })()
+
+    pendingRefreshes.set(accountId, refreshPromise)
+    return refreshPromise
   }
 
   return {
@@ -256,6 +340,7 @@ export const useAccountStore = defineStore('accounts', () => {
     sortedAccounts,
     bestAccount,
     fetchAccounts,
+    silentLoadAccounts,
     refreshAllUsage,
     addCurrentAccount,
     updateAccount,
@@ -267,6 +352,9 @@ export const useAccountStore = defineStore('accounts', () => {
     addProject,
     removeProject,
     setSelectedProject,
+    linkProject,
+    unlinkProject,
+    setSelectedProjectId,
     getQuotaSummary,
     healthChecking,
     checkTokenHealth,

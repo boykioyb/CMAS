@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { useAccountStore } from '@/stores/accountStore'
+import { useProjectStore } from '@/stores/projectStore'
 import { useUiStore } from '@/stores/uiStore'
 import type { Account } from '@/types'
-import { Edit3, Trash2, ExternalLink, RefreshCw, ShieldCheck } from 'lucide-vue-next'
+import { Edit3, Trash2, ExternalLink, RefreshCw, ShieldCheck, LogIn } from 'lucide-vue-next'
 
 const { t } = useI18n()
 const accountStore = useAccountStore()
+const projectStore = useProjectStore()
 const uiStore = useUiStore()
 
 defineProps<{
@@ -17,6 +19,7 @@ const emit = defineEmits<{
   switchVscode: [id: string]
   edit: [account: Account]
   delete: [id: string]
+  reauth: [account: Account]
 }>()
 
 function progressColor(percent: number): string {
@@ -29,10 +32,31 @@ async function checkHealth(accountId: string) {
   try {
     const result = await accountStore.checkTokenHealth(accountId)
     if (result.valid) {
-      const org = result.organization_name ? ` (${result.organization_name})` : ''
-      uiStore.showToast('success', `Token OK${org}`)
+      if (result.status === 'refreshed') {
+        uiStore.showToast('success', t('accounts.tokenRefreshed'))
+      } else {
+        const org = result.organization_name ? ` (${result.organization_name})` : ''
+        uiStore.showToast('success', `Token OK${org}`)
+      }
     } else {
       uiStore.showToast('error', result.error_message || `Token ${result.status}`)
+    }
+  } catch (e) {
+    uiStore.showToast('error', String(e))
+  }
+}
+
+async function handleSyncUsage(accountId: string) {
+  try {
+    const data = await accountStore.fetchAccountUsage(accountId)
+    if (data.success) {
+      uiStore.showToast('success', t('common.success'))
+    } else if (data.error_message?.includes('Rate limited')) {
+      uiStore.showToast('warning', t('accounts.rateLimited', { count: 1 }))
+    } else if (!data.authenticated) {
+      uiStore.showToast('error', t('accounts.tokenRefreshFailed'))
+    } else {
+      uiStore.showToast('warning', data.error_message || t('common.error'))
     }
   } catch (e) {
     uiStore.showToast('error', String(e))
@@ -70,10 +94,10 @@ async function checkHealth(accountId: string) {
             {{ t('accounts.active') }}
           </span>
           <span v-if="account.status === 'expired'" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300">
-            Expired
+            {{ t('accounts.expired') }}
           </span>
           <span v-else-if="account.status === 'error'" class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300">
-            Error
+            {{ t('common.error') }}
           </span>
           <span :class="[
             'px-1.5 py-0.5 rounded text-[10px] font-bold',
@@ -87,10 +111,12 @@ async function checkHealth(accountId: string) {
       </div>
 
       <!-- Project -->
-      <div v-if="account.projects.length > 0" class="mb-3">
+      <div v-if="account.project_ids.length > 0" class="mb-3">
         <div class="text-[10px] uppercase text-gray-400 font-semibold mb-1">{{ t('accounts.project') }}</div>
         <div class="text-xs text-gray-700 dark:text-gray-300 truncate">
-          {{ account.projects[account.selected_project ?? 0]?.name || '-' }}
+          {{
+            projectStore.projectById.get(account.selected_project_id ?? account.project_ids[0])?.name || '-'
+          }}
         </div>
       </div>
 
@@ -100,7 +126,7 @@ async function checkHealth(accountId: string) {
           <!-- Session -->
           <div v-if="accountStore.getAccountRealUsage(account.id)!.session_percent != null">
             <div class="flex items-center justify-between mb-1">
-              <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">Session</span>
+              <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">{{ t('accounts.sessionLabel') }}</span>
               <span class="text-[10px] font-semibold text-gray-700 dark:text-gray-300">
                 {{ accountStore.getAccountRealUsage(account.id)!.session_percent }}%
                 <span v-if="accountStore.getAccountRealUsage(account.id)!.session_reset" class="font-normal text-gray-400">({{ accountStore.getAccountRealUsage(account.id)!.session_reset }})</span>
@@ -116,7 +142,7 @@ async function checkHealth(accountId: string) {
           <!-- Weekly -->
           <div v-if="accountStore.getAccountRealUsage(account.id)!.weekly_all_percent != null">
             <div class="flex items-center justify-between mb-1">
-              <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">Weekly</span>
+              <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">{{ t('accounts.weeklyLabel') }}</span>
               <span class="text-[10px] font-semibold text-gray-700 dark:text-gray-300">
                 {{ accountStore.getAccountRealUsage(account.id)!.weekly_all_percent }}%
                 <span v-if="accountStore.getAccountRealUsage(account.id)!.weekly_reset" class="font-normal text-gray-400">({{ accountStore.getAccountRealUsage(account.id)!.weekly_reset }})</span>
@@ -132,7 +158,7 @@ async function checkHealth(accountId: string) {
           <!-- Sonnet -->
           <div v-if="accountStore.getAccountRealUsage(account.id)!.weekly_sonnet_percent != null">
             <div class="flex items-center justify-between mb-1">
-              <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">Sonnet</span>
+              <span class="text-[10px] font-medium text-gray-500 dark:text-gray-400">{{ t('accounts.sonnetLabel') }}</span>
               <span class="text-[10px] font-semibold text-gray-700 dark:text-gray-300">{{ accountStore.getAccountRealUsage(account.id)!.weekly_sonnet_percent }}%</span>
             </div>
             <div class="w-full h-1.5 rounded-full bg-gray-100 dark:bg-gray-700 overflow-hidden">
@@ -147,7 +173,7 @@ async function checkHealth(accountId: string) {
         <!-- Loading -->
         <div v-else-if="accountStore.isFetchingUsage(account.id)" class="flex items-center gap-1.5 py-2 text-[10px] text-gray-400">
           <RefreshCw :size="10" class="animate-spin" />
-          Loading...
+          {{ t('common.loading') }}
         </div>
 
         <!-- Error / no data -->
@@ -157,10 +183,10 @@ async function checkHealth(accountId: string) {
           </span>
           <button
             v-else
-            @click="accountStore.fetchAccountUsage(account.id)"
+            @click="handleSyncUsage(account.id)"
             class="text-primary-500 hover:text-primary-600"
           >
-            Sync usage
+            {{ t('accounts.syncUsage') }}
           </button>
         </div>
       </div>
@@ -175,10 +201,10 @@ async function checkHealth(accountId: string) {
           VSCode
         </button>
         <button
-          @click="accountStore.fetchAccountUsage(account.id)"
+          @click="handleSyncUsage(account.id)"
           :disabled="accountStore.isFetchingUsage(account.id)"
           class="cursor-pointer p-1.5 rounded-lg text-gray-400 hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors disabled:opacity-50"
-          title="Sync usage"
+          :title="t('accounts.syncUsage')"
         >
           <RefreshCw :size="13" :class="{ 'animate-spin': accountStore.isFetchingUsage(account.id) }" />
         </button>
@@ -186,9 +212,17 @@ async function checkHealth(accountId: string) {
           @click="checkHealth(account.id)"
           :disabled="accountStore.isHealthChecking(account.id)"
           class="cursor-pointer p-1.5 rounded-lg text-gray-400 hover:text-emerald-500 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors disabled:opacity-50"
-          title="Check token"
+          :title="t('accounts.checkToken')"
         >
           <ShieldCheck :size="13" :class="{ 'animate-pulse': accountStore.isHealthChecking(account.id) }" />
+        </button>
+        <button
+          v-if="account.status === 'expired' || account.status === 'error'"
+          @click="emit('reauth', account)"
+          class="cursor-pointer p-1.5 rounded-lg text-amber-500 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+          :title="t('accounts.reauth')"
+        >
+          <LogIn :size="13" />
         </button>
         <button
           @click="emit('edit', account)"

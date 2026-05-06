@@ -23,6 +23,18 @@ pub fn run() {
             // reads credentials.
             services::keychain::migrate_keychain_account_name();
 
+            // One-time migration: move per-account backup credentials from
+            // keychain (CMAS-Account-<id>) to flat files in
+            // ~/.claude-switcher/credentials/. Idempotent.
+            let account_ids: Vec<String> = commands::account::load_accounts()
+                .iter()
+                .map(|a| a.id.clone())
+                .collect();
+            let migrated = services::keychain::migrate_legacy_backups_to_files(&account_ids);
+            if migrated > 0 {
+                log::info!("Migrated {} legacy keychain backup(s) to file store", migrated);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

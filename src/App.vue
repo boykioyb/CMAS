@@ -37,10 +37,15 @@ function stopUsagePolling() {
 
 function startHealthCheckPolling() {
   stopHealthCheckPolling()
-  // Health check + auto-refresh every 1 hour
+  // Run an immediate check so a freshly-launched app sees current status
+  // instead of waiting a full interval.
+  accountStore.syncAndCheckAllTokens()
+  // Poll every 15 minutes. Access tokens commonly live ~1h with a 5-minute
+  // pre-expiry buffer in is_token_expired — at 15 min we always catch a
+  // soon-to-expire token before the CLI rotates it out from under us.
   healthCheckTimer = setInterval(() => {
     accountStore.syncAndCheckAllTokens()
-  }, 60 * 60 * 1000)
+  }, 15 * 60 * 1000)
 }
 
 function stopHealthCheckPolling() {

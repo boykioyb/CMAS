@@ -1,5 +1,5 @@
 use crate::models::{Account, AccountPlan, AccountStatus, AccountUpdate, OAuthAccount, UsageInfo};
-use crate::services::{claude_config, keychain, project_registry, usage_tracker};
+use crate::services::{claude_config, credential_store, keychain, project_registry, usage_tracker};
 use std::fs;
 use std::path::PathBuf;
 
@@ -149,7 +149,7 @@ pub fn add_current_account(label: Option<String>) -> Result<Account, String> {
     let active_creds = keychain::read_active_credentials().ok();
 
     if let Some(ref creds) = active_creds {
-        keychain::backup_credentials(&id, creds).map_err(|e| e.to_string())?;
+        credential_store::store(&id, creds).map_err(|e| e.to_string())?;
         // Re-write to active keychain with -A ACL to prevent future prompts
         let _ = keychain::write_active_credentials(creds);
     }
@@ -314,8 +314,8 @@ pub fn remove_account(id: String) -> Result<(), String> {
         .map(|a| a.is_active)
         .unwrap_or(false);
 
-    // Delete keychain backup
-    let _ = keychain::delete_credentials(&id);
+    // Delete credentials from file store
+    let _ = credential_store::delete(&id);
 
     accounts.retain(|a| a.id != id);
 

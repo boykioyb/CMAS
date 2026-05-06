@@ -1,5 +1,5 @@
 use crate::models::{Account, AccountPlan, AccountStatus, UsageInfo};
-use crate::services::{claude_auth, claude_config, keychain};
+use crate::services::{claude_auth, claude_config, credential_store, keychain};
 
 /// Step 1: Backup current credentials before starting OAuth for new account
 #[tauri::command]
@@ -12,7 +12,7 @@ pub fn auth_backup_current() -> Result<Option<String>, String> {
     // Backup current credentials to a temp slot.
     // After reading, re-write with -A ACL so future reads are prompt-free.
     if let Ok(creds) = keychain::read_active_credentials() {
-        keychain::backup_credentials("__temp_current__", &creds)
+        credential_store::store("__temp_current__", &creds)
             .map_err(|e| format!("Failed to backup credentials: {}", e))?;
         let _ = keychain::write_active_credentials(&creds);
     }
@@ -93,9 +93,9 @@ pub fn auth_confirm_new_account(label: Option<String>) -> Result<Account, String
 
     // Check if already exists
     if let Some(existing) = accounts.iter().find(|a| a.account_uuid == oauth.account_uuid).cloned() {
-        // Account exists - update credentials backup and oauth_config
+        // Account exists - update credentials store and oauth_config
         if let Some(ref creds) = active_creds {
-            let _ = keychain::backup_credentials(&existing.id, creds);
+            let _ = credential_store::store(&existing.id, creds);
         }
         // Update oauth_config for existing account
         if let Ok(oauth_cfg) = claude_config::read_full_oauth_account() {
@@ -110,10 +110,10 @@ pub fn auth_confirm_new_account(label: Option<String>) -> Result<Account, String
     // Save new account
     let id = uuid::Uuid::new_v4().to_string();
 
-    // Backup the new account's credentials
+    // Save the new account's credentials to file store
     if let Some(ref creds) = active_creds {
-        keychain::backup_credentials(&id, creds)
-            .map_err(|e| format!("Failed to backup new credentials: {}", e))?;
+        credential_store::store(&id, creds)
+            .map_err(|e| format!("Failed to save new credentials: {}", e))?;
     }
 
     // Save the full oauthAccount config blob
@@ -167,13 +167,13 @@ pub fn auth_confirm_new_account(label: Option<String>) -> Result<Account, String
 #[tauri::command]
 pub fn auth_restore_original() -> Result<(), String> {
     // Restore credentials from temp backup
-    if let Ok(creds) = keychain::restore_credentials("__temp_current__") {
+    if let Ok(creds) = credential_store::load("__temp_current__") {
         keychain::write_active_credentials(&creds)
             .map_err(|e| format!("Failed to restore credentials: {}", e))?;
     }
 
     // Clean up temp backup
-    let _ = keychain::delete_credentials("__temp_current__");
+    let _ = credential_store::delete("__temp_current__");
 
     // Also need to restore the original oauth config
     let accounts = super::account::load_accounts();
@@ -225,8 +225,8 @@ pub fn auth_reauth_confirm(account_id: String) -> Result<Account, String> {
     // Re-write with -A ACL
     let _ = keychain::write_active_credentials(&active_creds);
 
-    // Update backup for this account
-    keychain::backup_credentials(&account.id, &active_creds)
+    // Update credential store for this account
+    credential_store::store(&account.id, &active_creds)
         .map_err(|e| format!("Failed to save credentials: {}", e))?;
 
     // Update oauth_config

@@ -359,7 +359,7 @@ fn read_credential_metadata() -> (Option<String>, Option<String>) {
         Some(a) => a,
         None => return (None, None),
     };
-    if let Ok(creds_str) = crate::services::keychain::restore_credentials(&active.id) {
+    if let Ok(creds_str) = crate::services::credential_store::load(&active.id) {
         if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&creds_str) {
             let oauth = creds.get("claudeAiOauth").unwrap_or(&creds);
             let sub_type = oauth

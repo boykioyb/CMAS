@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 const OAUTH_TOKEN_ENDPOINT: &str = "https://platform.claude.com/v1/oauth/token";
@@ -13,6 +13,21 @@ const REFRESH_COOLDOWN_SECS: u64 = 300;
 lazy_static::lazy_static! {
     /// Tracks last failed refresh time per account to prevent hammering the API.
     static ref REFRESH_COOLDOWNS: Mutex<HashMap<String, Instant>> = Mutex::new(HashMap::new());
+
+    /// Per-account locks to serialize refresh calls. Without this, two concurrent
+    /// triggers (hourly polling + manual click + reactive 401 fallback) can both
+    /// read the same RT, race against the OAuth server's exactly-once rotation,
+    /// and one side gets `invalid_grant` → cooldown → user appears logged out.
+    static ref REFRESH_LOCKS: Mutex<HashMap<String, Arc<Mutex<()>>>> = Mutex::new(HashMap::new());
+}
+
+/// Acquire (or create) the refresh lock for a given account.
+fn get_refresh_lock(account_id: &str) -> Arc<Mutex<()>> {
+    let mut locks = REFRESH_LOCKS.lock().expect("refresh locks poisoned");
+    locks
+        .entry(account_id.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
 }
 
 /// Check if an account is in cooldown (recently failed refresh).
@@ -42,6 +57,20 @@ fn clear_cooldown(account_id: &str) {
 /// Public: clear cooldown for re-auth scenarios.
 pub fn clear_cooldown_for(account_id: &str) {
     clear_cooldown(account_id);
+}
+
+/// True if a refresh error indicates the refresh_token itself is dead.
+/// Only permanent errors should set a cooldown — transient errors (network,
+/// 5xx, parse failures) must remain retryable, otherwise a single hiccup
+/// blocks all refreshes for 5 minutes and the user appears to be logged out.
+fn is_permanent_refresh_error(err_msg: &str) -> bool {
+    let m = err_msg.to_ascii_lowercase();
+    m.contains("invalid_grant")
+        || m.contains("invalid_token")
+        || m.contains("invalid_request")
+        || m.contains("unauthorized_client")
+        || m.contains("unsupported_grant_type")
+        || m.contains("no refresh token")
 }
 
 /// Token info extracted from stored credentials.
@@ -98,23 +127,36 @@ pub fn extract_token_info(creds: &str) -> Option<TokenInfo> {
 }
 
 /// Check if a token is expired or about to expire (within 5 minutes).
+///
+/// Fail-safe direction: when we cannot determine the expiry, return `true`
+/// so the caller will refresh. Pretending an unknown token is valid (the old
+/// behavior) caused refreshes to be skipped indefinitely on parse failures.
 pub fn is_token_expired(token_info: &TokenInfo) -> bool {
     let expires_at = match &token_info.expires_at {
         Some(s) => s,
-        None => return false, // No expiry info — assume valid
+        None => return true,
     };
 
     let expires = match chrono::DateTime::parse_from_rfc3339(expires_at) {
         Ok(dt) => dt,
         Err(_) => {
-            // Try parsing as milliseconds timestamp
-            if let Ok(ms) = expires_at.parse::<i64>() {
-                match chrono::DateTime::from_timestamp_millis(ms) {
-                    Some(dt) => dt.fixed_offset(),
-                    None => return false,
+            // Numeric timestamp — auto-detect seconds vs milliseconds.
+            // Anything below 10^11 (year ~5138 in seconds) is too small to be
+            // a millisecond epoch for any plausible token, so treat as seconds.
+            let parsed = expires_at.parse::<i64>();
+            match parsed {
+                Ok(n) => {
+                    let dt = if n.abs() < 100_000_000_000 {
+                        chrono::DateTime::from_timestamp(n, 0)
+                    } else {
+                        chrono::DateTime::from_timestamp_millis(n)
+                    };
+                    match dt {
+                        Some(d) => d.fixed_offset(),
+                        None => return true,
+                    }
                 }
-            } else {
-                return false;
+                Err(_) => return true,
             }
         }
     };
@@ -226,7 +268,7 @@ pub fn refresh_oauth_token(current_creds: &str) -> Result<String> {
 /// Updates both the backup and (if active) the global keychain.
 /// Respects cooldown — skips if a recent refresh failed within 5 minutes.
 pub fn refresh_account_credentials(account_id: &str, is_active: bool) -> Result<RefreshResult> {
-    // Check cooldown — don't hammer the API after a recent failure
+    // Cheap pre-check before we even queue on the lock.
     if is_in_cooldown(account_id) {
         log::info!("Account {} is in refresh cooldown, skipping", account_id);
         return Err(anyhow::anyhow!(
@@ -234,16 +276,53 @@ pub fn refresh_account_credentials(account_id: &str, is_active: bool) -> Result<
         ));
     }
 
-    // Read current backup credentials
-    let current_creds = super::keychain::restore_credentials(account_id)
-        .context("Failed to read backup credentials")?;
+    // Serialize all refresh attempts for this account. If another thread is
+    // already refreshing, we wait. Once we get the lock, the token in storage
+    // is the result of whatever the other thread just did — so we re-evaluate
+    // and short-circuit when possible.
+    let lock = get_refresh_lock(account_id);
+    let _guard = lock.lock().expect("per-account refresh lock poisoned");
+
+    // Re-check cooldown — another thread may have just failed permanently.
+    if is_in_cooldown(account_id) {
+        return Err(anyhow::anyhow!(
+            "Token refresh on cooldown after concurrent failure"
+        ));
+    }
+
+    // Read current credentials. When this is the active account, the Claude
+    // CLI may have rotated tokens behind our back — prefer the active keychain
+    // (CLI's source of truth) and fall back to our file store.
+    let current_creds = if is_active {
+        super::keychain::read_active_credentials()
+            .or_else(|_| super::credential_store::load(account_id))
+            .context("Failed to read credentials (active and file store both failed)")?
+    } else {
+        super::credential_store::load(account_id)
+            .context("Failed to read credentials from file store")?
+    };
+
+    // Short-circuit: if the stored token is no longer expiring soon, a
+    // concurrent refresh just succeeded and we can reuse its result.
+    if let Some(info) = extract_token_info(&current_creds) {
+        if !is_token_expired(&info) {
+            log::info!(
+                "Account {}: token already fresh after concurrent refresh, skipping",
+                account_id
+            );
+            return Ok(RefreshResult {
+                success: true,
+                message: "Token already refreshed by concurrent caller".to_string(),
+            });
+        }
+    }
 
     // Attempt refresh
     match refresh_oauth_token(&current_creds) {
         Ok(new_creds) => {
-            // Save refreshed credentials to backup
-            super::keychain::backup_credentials(account_id, &new_creds)
-                .context("Failed to save refreshed credentials to backup")?;
+            // Save refreshed credentials to file store
+            super::credential_store::store(account_id, &new_creds)
+                .context("Failed to save refreshed credentials")?;
 
             // If this is the active account, also update the global keychain
             if is_active {
@@ -260,8 +339,19 @@ pub fn refresh_account_credentials(account_id: &str, is_active: bool) -> Result<
             })
         }
         Err(e) => {
-            set_cooldown(account_id);
-            log::warn!("Token refresh failed for {}, cooldown set: {}", account_id, e);
+            let msg = e.to_string();
+            if is_permanent_refresh_error(&msg) {
+                set_cooldown(account_id);
+                log::warn!(
+                    "Token refresh permanently failed for {}, cooldown set: {}",
+                    account_id, msg
+                );
+            } else {
+                log::info!(
+                    "Token refresh transient error for {} (no cooldown): {}",
+                    account_id, msg
+                );
+            }
             Err(e)
         }
     }

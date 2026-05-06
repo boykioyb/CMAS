@@ -38,6 +38,8 @@ async function checkHealth(accountId: string) {
         const org = result.organization_name ? ` (${result.organization_name})` : ''
         uiStore.showToast('success', `Token OK${org}`)
       }
+    } else if (result.status === 'transient_error') {
+      uiStore.showToast('warning', result.error_message || 'Network issue, please retry')
     } else {
       uiStore.showToast('error', result.error_message || `Token ${result.status}`)
     }

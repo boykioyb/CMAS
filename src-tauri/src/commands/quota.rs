@@ -1,5 +1,5 @@
 use crate::models::UsageInfo;
-use crate::services::{keychain, token_refresh, usage_tracker};
+use crate::services::{credential_store, token_refresh, usage_tracker};
 
 #[tauri::command]
 pub fn get_usage_info() -> Result<UsageInfo, String> {
@@ -22,8 +22,8 @@ pub fn check_account_token(account_id: String) -> Result<TokenHealthResult, Stri
         .cloned()
         .ok_or("Account not found")?;
 
-    // Get credentials from backup
-    let mut creds = match keychain::restore_credentials(&account.id) {
+    // Get credentials from file store
+    let mut creds = match credential_store::load(&account.id) {
         Ok(c) => c,
         Err(_) => {
             return Ok(TokenHealthResult {
@@ -47,7 +47,7 @@ pub fn check_account_token(account_id: String) -> Result<TokenHealthResult, Stri
     if proactively_expired {
         log::info!("Manual check: token expired by expiresAt for {}, refreshing first", account_id);
         if let Ok(_) = token_refresh::refresh_account_credentials(&account_id, account.is_active) {
-            if let Ok(new_creds) = keychain::restore_credentials(&account.id) {
+            if let Ok(new_creds) = credential_store::load(&account.id) {
                 creds = new_creds;
                 refreshed = true;
             }
@@ -108,27 +108,47 @@ pub fn check_account_token(account_id: String) -> Result<TokenHealthResult, Stri
         if let Some(err) = json.get("error") {
             let err_type = err.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
             let err_msg = err.get("message").and_then(|m| m.as_str()).unwrap_or("Unknown error");
-            let is_expired = err_msg.contains("expired");
+            let needs_refresh = err_type == "authentication_error"
+                || err_msg.to_ascii_lowercase().contains("expired");
 
-            // Reactive refresh: API says expired but we haven't tried refresh yet
-            if is_expired && !refreshed && attempt == 1 {
-                log::info!("Manual check: API reports expired for {}, attempting refresh", account_id);
+            // Transient infrastructure errors — don't touch account status.
+            if err_type == "rate_limit_error"
+                || err_type == "overloaded_error"
+                || err_type == "api_error"
+            {
+                return Ok(TokenHealthResult {
+                    valid: false,
+                    status: "transient_error".to_string(),
+                    organization_name: None,
+                    organization_role: None,
+                    error_message: Some(err_msg.to_string()),
+                });
+            }
+
+            // Reactive refresh: API says auth-failed and we haven't tried refresh yet
+            if needs_refresh && !refreshed && attempt == 1 {
+                log::info!("Manual check: API reports auth error for {}, attempting refresh", account_id);
                 if let Ok(_) = token_refresh::refresh_account_credentials(&account_id, account.is_active) {
-                    if let Ok(new_creds) = keychain::restore_credentials(&account.id) {
+                    if let Ok(new_creds) = credential_store::load(&account.id) {
                         creds = new_creds;
                         refreshed = true;
                         continue;
                     }
                 }
+                // Refresh failed — was the failure permanent?
+                if !token_refresh::is_in_cooldown(&account_id) {
+                    // Transient (network glitch, 5xx). Don't change status.
+                    return Ok(TokenHealthResult {
+                        valid: false,
+                        status: "transient_error".to_string(),
+                        organization_name: None,
+                        organization_role: None,
+                        error_message: Some(format!("Refresh transiently failed: {}", err_msg)),
+                    });
+                }
             }
 
-            let status = if is_expired {
-                "expired"
-            } else if err_type == "authentication_error" {
-                "auth_error"
-            } else {
-                "error"
-            };
+            let status = if needs_refresh { "expired" } else { "error" };
 
             let mut accounts = super::account::load_accounts();
             if let Some(acc) = accounts.iter_mut().find(|a| a.id == account_id) {
@@ -236,15 +256,17 @@ pub fn sync_and_check_all_tokens() -> Result<Vec<TokenSyncResult>, String> {
         results.push(result);
     }
 
-    // 3. Persist updated statuses
+    // 3. Persist updated statuses. `transient_error` means we couldn't
+    //    determine the truth (network/5xx) — leave the existing status alone.
     let mut accounts = super::account::load_accounts();
     for result in &results {
         if let Some(acc) = accounts.iter_mut().find(|a| a.id == result.account_id) {
-            acc.status = match result.status.as_str() {
-                "ok" => crate::models::AccountStatus::Ok,
-                "expired" => crate::models::AccountStatus::Expired,
-                _ => crate::models::AccountStatus::Error,
-            };
+            match result.status.as_str() {
+                "ok" => acc.status = crate::models::AccountStatus::Ok,
+                "expired" => acc.status = crate::models::AccountStatus::Expired,
+                "transient_error" => { /* keep existing status */ }
+                _ => acc.status = crate::models::AccountStatus::Error,
+            }
         }
     }
     let _ = super::account::save_accounts(&accounts);
@@ -255,8 +277,8 @@ pub fn sync_and_check_all_tokens() -> Result<Vec<TokenSyncResult>, String> {
 fn check_and_refresh_single_account(account: &crate::models::Account) -> TokenSyncResult {
     let account_id = &account.id;
 
-    // Try to read backup credentials
-    let creds = match keychain::restore_credentials(account_id) {
+    // Try to read credentials from file store
+    let creds = match credential_store::load(account_id) {
         Ok(c) => c,
         Err(_) => {
             return TokenSyncResult {
@@ -291,7 +313,18 @@ fn check_and_refresh_single_account(account: &crate::models::Account) -> TokenSy
             }
             Err(e) => {
                 log::warn!("Token refresh failed for {}: {}", account_id, e);
-                // Refresh failed — verify via API as fallback
+                // Transient failure (network/5xx) — bail out without touching
+                // status. The account isn't broken, the network is.
+                if !token_refresh::is_in_cooldown(account_id) {
+                    return TokenSyncResult {
+                        account_id: account_id.clone(),
+                        status: "transient_error".to_string(),
+                        refreshed: false,
+                        message: format!("Transient refresh error: {}", e),
+                    };
+                }
+                // Permanent — fall through to API verify so we end up
+                // returning status="expired" with confidence.
             }
         }
     }
@@ -337,6 +370,14 @@ fn check_and_refresh_single_account(account: &crate::models::Account) -> TokenSy
                     }
                     Err(e) => {
                         log::warn!("Token refresh failed for {}: {}", account_id, e);
+                        if !token_refresh::is_in_cooldown(account_id) {
+                            return TokenSyncResult {
+                                account_id: account_id.clone(),
+                                status: "transient_error".to_string(),
+                                refreshed: false,
+                                message: format!("Transient refresh error: {}", e),
+                            };
+                        }
                     }
                 }
             }
@@ -344,7 +385,7 @@ fn check_and_refresh_single_account(account: &crate::models::Account) -> TokenSy
                 account_id: account_id.clone(),
                 status: "expired".to_string(),
                 refreshed: false,
-                message: "Token expired, refresh failed".to_string(),
+                message: "Token expired, refresh_token is no longer valid".to_string(),
             }
         }
         TokenVerifyResult::Error(msg) => TokenSyncResult {
@@ -355,12 +396,9 @@ fn check_and_refresh_single_account(account: &crate::models::Account) -> TokenSy
         },
         TokenVerifyResult::NetworkError => TokenSyncResult {
             account_id: account_id.clone(),
-            // Don't mark as error if it's just a network issue
-            status: if account.status == crate::models::AccountStatus::Ok {
-                "ok".to_string()
-            } else {
-                "error".to_string()
-            },
+            // Network blip — never change persisted status. Caller treats
+            // "transient_error" as "leave the account alone".
+            status: "transient_error".to_string(),
             refreshed: false,
             message: "Network error during health check".to_string(),
         },
@@ -411,10 +449,21 @@ fn verify_token_via_api(token: &str) -> TokenVerifyResult {
                     .and_then(|t| t.as_str())
                     .unwrap_or("unknown");
 
-                if err_msg.contains("expired") || err_type == "authentication_error" {
-                    TokenVerifyResult::Expired
-                } else {
-                    TokenVerifyResult::Error(err_msg.to_string())
+                // Map by error type rather than fuzzy-matching the message.
+                // Rate-limited / overloaded responses do NOT mean the token
+                // is bad; treating them as "Expired" used to trigger spurious
+                // refresh attempts and ultimately mark healthy accounts as expired.
+                match err_type {
+                    "authentication_error" => TokenVerifyResult::Expired,
+                    "rate_limit_error" => TokenVerifyResult::Valid,
+                    "overloaded_error" | "api_error" => TokenVerifyResult::NetworkError,
+                    _ => {
+                        if err_msg.to_ascii_lowercase().contains("expired") {
+                            TokenVerifyResult::Expired
+                        } else {
+                            TokenVerifyResult::Error(err_msg.to_string())
+                        }
+                    }
                 }
             } else {
                 TokenVerifyResult::Valid
@@ -455,12 +504,24 @@ pub fn refresh_account_token(account_id: String) -> Result<TokenSyncResult, Stri
                 message: "Token refreshed successfully".to_string(),
             })
         }
-        Err(e) => Ok(TokenSyncResult {
-            account_id,
-            status: "error".to_string(),
-            refreshed: false,
-            message: format!("Refresh failed: {}", e),
-        }),
+        Err(e) => {
+            // Permanent failure → mark Expired so user re-auths.
+            // Transient → leave status alone, frontend shows retry hint.
+            let permanent = token_refresh::is_in_cooldown(&account_id);
+            if permanent {
+                let mut accounts = super::account::load_accounts();
+                if let Some(acc) = accounts.iter_mut().find(|a| a.id == account_id) {
+                    acc.status = crate::models::AccountStatus::Expired;
+                    let _ = super::account::save_accounts(&accounts);
+                }
+            }
+            Ok(TokenSyncResult {
+                account_id,
+                status: if permanent { "expired" } else { "transient_error" }.to_string(),
+                refreshed: false,
+                message: format!("Refresh failed: {}", e),
+            })
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-use crate::services::keychain;
+use crate::services::credential_store;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RealUsageData {
@@ -214,7 +214,7 @@ pub async fn scrape_claude_usage() -> Result<RealUsageData, String> {
     let accounts = super::account::load_accounts();
     let active = accounts.iter().find(|a| a.is_active)
         .ok_or("No active account")?;
-    let creds = keychain::restore_credentials(&active.id)
+    let creds = credential_store::load(&active.id)
         .map_err(|e| format!("{}", e))?;
     let token = extract_access_token(&creds).ok_or("No access token in credentials")?;
     fetch_usage_via_api(&token)
@@ -223,7 +223,7 @@ pub async fn scrape_claude_usage() -> Result<RealUsageData, String> {
 /// Fetch usage for a specific account by ID.
 #[tauri::command]
 pub fn fetch_account_usage(account_id: String) -> Result<RealUsageData, String> {
-    let creds = keychain::restore_credentials(&account_id).map_err(|e| format!("{}", e))?;
+    let creds = credential_store::load(&account_id).map_err(|e| format!("{}", e))?;
     let token = extract_access_token(&creds).ok_or("No access token in backup credentials")?;
     fetch_usage_via_api(&token)
 }

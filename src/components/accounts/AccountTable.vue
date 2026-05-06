@@ -64,6 +64,8 @@ async function checkHealth(accountId: string) {
       }
     } else if (result.status === 'expired' || result.status === 'auth_error') {
       uiStore.showToast('error', t('accounts.tokenRefreshFailed'))
+    } else if (result.status === 'transient_error') {
+      uiStore.showToast('warning', result.error_message || 'Network issue, please retry')
     } else {
       uiStore.showToast('error', result.error_message || `Token ${result.status}`)
     }

@@ -1,5 +1,5 @@
 use crate::models::OAuthAccount;
-use crate::services::{claude_config, keychain, vscode};
+use crate::services::{claude_config, credential_store, keychain, vscode};
 
 #[derive(serde::Serialize)]
 pub struct SwitchResult {
@@ -17,9 +17,9 @@ fn swap_credentials(target: &crate::models::Account, current_active: Option<&cra
     //    switch_and_open_vscode for a different account, so blindly
     //    backing up from global would corrupt the backup.
     if let Some(active) = current_active {
-        if keychain::restore_credentials(&active.id).is_err() {
+        if !credential_store::exists(&active.id) {
             if let Ok(creds) = keychain::read_active_credentials() {
-                let _ = keychain::backup_credentials(&active.id, &creds);
+                let _ = credential_store::store(&active.id, &creds);
             }
         }
         // Also save current oauthAccount config if the account doesn't have one yet
@@ -34,8 +34,8 @@ fn swap_credentials(target: &crate::models::Account, current_active: Option<&cra
         }
     }
 
-    // 2. Restore target credentials from backup
-    let target_creds = keychain::restore_credentials(&target.id)
+    // 2. Restore target credentials from file store
+    let target_creds = credential_store::load(&target.id)
         .map_err(|e| format!("Failed to restore credentials: {}", e))?;
 
     // 3. Write target credentials to active keychain slot
@@ -139,8 +139,8 @@ pub fn switch_and_open_vscode(
         })
     });
 
-    // 1. Get target credentials from backup
-    let target_creds = keychain::restore_credentials(&target.id)
+    // 1. Get target credentials from file store
+    let target_creds = credential_store::load(&target.id)
         .map_err(|e| format!("Failed to restore credentials: {}", e))?;
 
     // 2. Write credentials to global keychain (extension reads `-a {os_user}`)

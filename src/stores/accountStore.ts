@@ -181,9 +181,11 @@ export const useAccountStore = defineStore('accounts', () => {
     healthChecking.value.add(accountId)
     try {
       const result = await invoke<TokenHealthResult>('check_account_token', { accountId })
-      // Update local account status to match API result
+      // Update local account status to match API result. transient_error means
+      // the API/network blipped — don't change the displayed status, the next
+      // poll will resolve it.
       const idx = accounts.value.findIndex(a => a.id === accountId)
-      if (idx >= 0) {
+      if (idx >= 0 && result.status !== 'transient_error') {
         accounts.value[idx].status = result.valid ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
       }
       return result
@@ -287,10 +289,11 @@ export const useAccountStore = defineStore('accounts', () => {
     pendingSyncPromise = (async () => {
       try {
         const results = await invoke<TokenSyncResult[]>('sync_and_check_all_tokens')
-        // Update local account statuses
+        // Update local account statuses. transient_error preserves whatever
+        // status the account had before — it's a "we don't know" signal.
         for (const result of results) {
           const idx = accounts.value.findIndex(a => a.id === result.account_id)
-          if (idx >= 0) {
+          if (idx >= 0 && result.status !== 'transient_error') {
             accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
           }
         }
@@ -318,7 +321,7 @@ export const useAccountStore = defineStore('accounts', () => {
       try {
         const result = await invoke<TokenSyncResult>('refresh_account_token', { accountId })
         const idx = accounts.value.findIndex(a => a.id === accountId)
-        if (idx >= 0) {
+        if (idx >= 0 && result.status !== 'transient_error') {
           accounts.value[idx].status = result.status === 'ok' ? 'ok' : (result.status === 'expired' ? 'expired' : 'error')
         }
         return result

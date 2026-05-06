@@ -1,5 +1,6 @@
 pub mod claude_auth;
 pub mod claude_config;
+pub mod credential_store;
 pub mod keychain;
 pub mod project_registry;
 pub mod project_scanner;

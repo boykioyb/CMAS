@@ -147,20 +147,31 @@ pub fn write_session_credentials(session_key: &str, creds: &str) -> Result<()> {
     write_credentials_for_user(session_key, creds)
 }
 
-pub fn backup_credentials(account_id: &str, creds: &str) -> Result<()> {
-    let service = backup_service(account_id);
-    kc_write(&service, "claude-code", creds)
-}
-
-pub fn restore_credentials(account_id: &str) -> Result<String> {
-    let service = backup_service(account_id);
-    kc_read(&service, "claude-code")
-}
-
-pub fn delete_credentials(account_id: &str) -> Result<()> {
-    let service = backup_service(account_id);
-    kc_delete(&service, "claude-code");
-    Ok(())
+/// One-time migration: move per-account backup credentials from keychain
+/// (`CMAS-Account-<id>` service) to the file-based credential store.
+/// Idempotent — entries already present in the file store are skipped, and
+/// any successfully migrated keychain entry is deleted.
+pub fn migrate_legacy_backups_to_files(account_ids: &[String]) -> usize {
+    let mut migrated = 0usize;
+    for id in account_ids {
+        if super::credential_store::exists(id) {
+            // Already on disk — clean up legacy keychain entry if still around
+            let service = backup_service(id);
+            kc_delete(&service, "claude-code");
+            continue;
+        }
+        let service = backup_service(id);
+        if let Ok(creds) = kc_read(&service, "claude-code") {
+            if !creds.is_empty() {
+                if super::credential_store::store(id, &creds).is_ok() {
+                    kc_delete(&service, "claude-code");
+                    migrated += 1;
+                    log::info!("Migrated keychain backup → file for account {}", id);
+                }
+            }
+        }
+    }
+    migrated
 }
 
 /// One-time migration: if the old keychain entry (account="claude-code") exists

@@ -145,7 +145,7 @@ export interface RealUsageData {
 
 export interface TokenHealthResult {
   valid: boolean
-  status: 'ok' | 'refreshed' | 'expired' | 'auth_error' | 'error' | 'network_error' | 'no_credentials' | 'invalid_credentials'
+  status: 'ok' | 'refreshed' | 'expired' | 'auth_error' | 'error' | 'network_error' | 'transient_error' | 'no_credentials' | 'invalid_credentials'
   organization_name?: string
   organization_role?: string
   error_message?: string
